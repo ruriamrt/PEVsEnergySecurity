@@ -1,0 +1,731 @@
+---
+title: "Energy Independence and EVs"
+author: "Rocio Uria-Martinez"
+date: "04/02/2024"
+output: html_document
+---
+
+```{r LoadLibraries, eval=T, echo=F, include=F, message=F}
+
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(knitr)
+library(scales) 
+library(extrafont)
+library(purrr)
+library(broom)
+library(EIAdata)
+library(httr)
+library(jsonlite)
+library(directlabels)
+library(egg)
+
+```
+
+Note: chunks label readAPIxxxxxx do not need to be run every time. Those are chunks that read EIA data using its API. I save those and then load them into a separate chunk to proceed with data analysis.
+For that reason, the eval option is turned to F in those chunks. They only need to be rerun when data updates are needed.
+
+```{r PlotFormatTheme, eval=T, echo=F, warning=F, message=F}
+
+EERE.palette.long <- c("#007934", "#5E6A71", "#E37222", "#FECB00", "#69BE28", "#1F82BB", "#005B82", "#C3C8C8", "#9865AA", "#9E2432", "#000000")
+EERE.palette.names <- c("DarkGreen", "DarkGrey", "DarkOrange", "EggYolk", "PistachioGreen", "AquaBlue", "DarkBlue", "LightGrey", "Purple", "DarkRed", "Black")
+############################################################################
+
+##custom plot theme
+myFGtheme <- theme_bw() +   
+  theme(text=element_text(size=12)) +
+  theme(axis.text = element_text(size=10), axis.title=element_text(size=10, face="bold")) +
+  #theme(text=element_text(family="Franklin Gothic Book", size=12)) +
+  #theme(axis.text = element_text(size=10), axis.title=element_text(size=10, face="bold", family = "Franklin Gothic Medium")) +
+  #theme(axis.text.x = element_text(angle = 65, vjust = .95,hjust=.95))+
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "grey", size = 0.5), panel.grid.minor.y = element_line(color = "white"),
+        panel.background = element_blank(),
+        strip.background = element_rect(color = "white"),
+        axis.line = element_line(colour = "grey", size = 0.5), panel.border = element_blank()) +
+  theme(legend.direction = "horizontal", legend.position = "bottom", legend.box = "vertical", legend.title.align = 0, legend.key=element_blank()) + 
+  theme(legend.text = element_text((size = 10))) +
+  #theme(legend.title=element_text(size = 12, family = "Franklin Gothic Medium", face = "bold"))
+  theme(legend.title=element_text(size = 12, face = "bold"))
+
+
+
+OutputPath = "C:/Projects/EPA/PEV_ES_review/Output" 
+
+today <- Sys.Date()
+
+
+#Statement to use to knit through console
+
+#rmarkdown::render("C:/Projects/EPA/PEV_ES_review/Analysis/prices_electricity_petroleum.Rmd", output_dir = OutputPath, output_file = paste0("prices_mwh_pet_", today))
+
+```
+
+```{r APIkeystore, eval=F, echo=F, warning=F, message=F}
+
+#NOTE: EACH USER SHOULD GET ITS OWN KEY
+my_eia_API_key <- "0832E4028722FE12228D7571C850CF14"
+
+```
+
+
+#Net U.S. electricity imports as a percentage of total U.S. electricity use (annual projections from AEO2022)
+
+-->
+
+```{r readAPI_mwh_imports, eval=T, echo=F, warning=F, message=F}
+eia_api_v2_read <- function(api_codes){
+
+  api_call <- map(api_codes, httr::GET)
+  
+  api_call_content <- modify_depth(api_call, 1, "content") 
+  
+  api_char <- map(api_call_content, base::rawToChar)
+  
+  api_JSON <- map(api_char, jsonlite::fromJSON, flatten = TRUE)
+  
+  api_JSON_response <- modify_depth(api_JSON, 1, "response")
+  
+  api_JSON_data <- modify_depth(api_JSON_response, 1, "data")
+  
+  eia_data_df <- map(api_JSON_data, as.data.frame)
+  
+  eia_data_out <- reduce(eia_data_df, full_join) 
+    
+eia_data_out
+   
+#  api_JSON
+}
+
+```
+
+
+```{r mwh_imports, eval=T, echo=F, warning=F, message=F}
+
+###Historical data
+
+#https://www.eia.gov/electricity/annual/ (Table 1.3- Supply and disposition of electricity)
+#https://www.eia.gov/electricity/annual/ (Table 2.14- Electric Power Industry- U.S. electricity imports from and electricity exports to Canada and Mexico)
+
+
+#Units are MWh
+USmwhtrade_old  <- read_excel("../Data/energy_independence/epa_02_14_2011.xlsx", skip = 2) %>%
+  rename(year = `...1`, m_from_canada = Canada, x_to_canada = `...3`, m_from_mexico = Mexico, x_to_mexico = `...5`, m_total = `U.S. Total`, x_total = `...7`) %>%
+  slice(3:n()-1) %>%
+  mutate(across(where(is.character), as.numeric)) %>%
+  pivot_longer(cols = c(2:7), names_to = "variable", values_to = "value") %>%
+  mutate(flow_type = ifelse(grepl("m_", variable) == TRUE, "imports",
+                            ifelse(grepl("x_", variable) == TRUE, "exports", NA))) %>%
+  mutate(to_from = ifelse(grepl("canada", variable) == TRUE, "Canada",
+                            ifelse(grepl("mexico", variable) == TRUE, "Mexico", 
+                                   ifelse(grepl("total", variable) == TRUE, "total", NA)))) %>%
+  filter(year %in% c("2011"))
+
+USmwhtrade  <- read_excel("../Data/energy_independence/epa_02_14.xlsx", skip = 2) %>%
+  rename(year = `...1`, m_from_canada = Canada, x_to_canada = `...3`, m_from_mexico = Mexico, x_to_mexico = `...5`, m_total = `U.S. Total`, x_total = `...7`) %>%
+  slice(3:n()-1) %>%
+  mutate(across(where(is.character), as.numeric)) %>%
+  pivot_longer(cols = c(2:7), names_to = "variable", values_to = "value") %>%
+  mutate(flow_type = ifelse(grepl("m_", variable) == TRUE, "imports",
+                            ifelse(grepl("x_", variable) == TRUE, "exports", NA))) %>%
+  mutate(to_from = ifelse(grepl("canada", variable) == TRUE, "Canada",
+                            ifelse(grepl("mexico", variable) == TRUE, "Mexico", 
+                                   ifelse(grepl("total", variable) == TRUE, "total", NA)))) %>%
+  filter(year > 2009) %>%
+  rbind(USmwhtrade_old)
+
+USnetimports <- USmwhtrade %>%
+  filter(to_from == "total") %>%
+  dplyr::select(year, variable, value) %>%
+  pivot_wider(id_cols = "year", names_from = "variable", values_from = "value") %>%
+  mutate(netimp = m_total - x_total)
+
+#Units are thousand megawatthours
+USmwhsupply_old <- read_excel("../Data/energy_independence/epa_01_03_2011.xlsx", range = "A5:H16", col_names = TRUE) %>%
+  dplyr::select(Year,`Total Imports`, `Total Supply`) %>%
+  rename(tot_imports = `Total Imports`, tot_supply = `Total Supply`, year = Year) %>%
+  mutate(import_percentage = (tot_imports/tot_supply) * 100) %>%
+  filter(year %in% c("2011"))
+
+USmwhsupply <- read_excel("../Data/energy_independence/epa_01_03.xlsx", range = "A5:H16", col_names = TRUE) %>%
+  dplyr::select(Year,`Total Imports`, `Total Supply`) %>%
+  rename(tot_imports = `Total Imports`, tot_supply = `Total Supply`, year = Year) %>%
+  mutate(import_percentage = (tot_imports/tot_supply) * 100) %>%
+  filter(year > 2009) %>%
+  rbind(USmwhsupply_old)
+
+USnetimpfrac <- left_join(USmwhsupply, USnetimports, by = "year") %>%
+  mutate(netimpfrac = (netimp/1000)/tot_supply) %>%
+  mutate(data_type = "historical") %>%
+  dplyr::select(year, netimpfrac, data_type)
+
+tradeflowmagnitude <- left_join(USmwhtrade, USmwhsupply, by = "year") %>%
+  mutate(value_000mw = value/1000) %>%
+  mutate(supplypercentage = (value_000mw/tot_supply)*100) %>%
+  group_by(variable) %>%
+  summarise(supplypercentage = mean(supplypercentage))
+
+
+US_MWH_netimpfrac_hist_plot <- ggplot(USnetimpfrac, aes(x = year, y = netimpfrac*100, group = data_type, color = data_type)) +
+  geom_line() +
+  #geom_dl(aes(label = scenario_labels),  method = list(dl.trans(x = x - 2.15), "last.bumpup")) +
+  scale_x_continuous(breaks = pretty_breaks(n = 12), limits = c(NA, max(USnetimpfrac$year))) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * 100 * max(USnetimpfrac$netimpfrac)), breaks = pretty_breaks(n = 8)) +
+  labs(x = "", y = "percentage", color = "") +
+  myFGtheme +
+  theme(legend.position = "none")
+US_MWH_netimpfrac_hist_plot
+
+ggsave("../Output/US_MWH_netimpfrac_hist_plot.png", US_MWH_netimpfrac_hist_plot, width = 7, height = 5.5, units = "in")
+
+```
+
+```{r readAPI_aeo_mwhnetimp, eval=F, echo=F, warning=F, message=F}
+###AEO PROJECTIONS
+
+scenario_labels <- c("Reference", "High growth", "Low growth", "High price", "Low price", "High oil & gas supply", "Low oil & gas supply", "High zero-carbon technology cost", "Low zero-carbon technology cost")
+scenario <- c("ref2023", "highmacro", "lowmacro", "highprice", "lowprice", "highogs", "lowogs", "hiZTC", "loZTC")
+scenario_match <- data.frame(scenario, scenario_labels)
+
+totaluse_data_AEO2023_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/aeo/2023/data/?frequency=annual&data[0]=value&facets[seriesId][]=cnsm_NA_elep_NA_tel_NA_usa_blnkwh&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=" ,my_eia_API_key)) %>%
+  unique()
+
+netimp_data_AEO2023_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/aeo/2023/data/?frequency=annual&data[0]=value&facets[seriesId][]=trad_NA_elep_NA_netimp_NA_usa_blnkwh&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=", my_eia_API_key)) %>%
+  unique()
+
+save(totaluse_data_AEO2023_df, file = "../Data/energy_independence/totaluse_data_AEO2023_df")
+
+save(netimp_data_AEO2023_df, file = "../Data/energy_independence/netimp_data_AEO2023_df")
+```
+
+```{r aeo_mwhnetimp, eval=T, echo=F, warning=F, message=F}
+
+load("../Data/energy_independence/totaluse_data_AEO2023_df")
+
+load("../Data/energy_independence/netimp_data_AEO2023_df")
+
+eia_aeo_mwh_netimp <- rbind(totaluse_data_AEO2023_df, netimp_data_AEO2023_df) %>%
+  unique() %>%
+  as.data.frame %>%
+  select(-seriesId) %>%
+  pivot_wider(id_cols = c(period, history, scenario, scenarioDescription, tableId, tableName, regionId, regionName, unit), names_from = "seriesName", values_from = "value") %>%
+  rename(NetImports = 'Electricity : Net Imports', TotalUse = 'Electricity : Total Electricity Use') %>%
+  mutate_at(c("NetImports", "TotalUse", "period"), as.numeric) %>%
+  mutate(netimpfrac =  NetImports/ TotalUse) %>%
+  rename(year = period) %>%
+  filter(scenario %in% scenario) %>%
+  filter(history == "PROJECTION") %>%
+  filter(year > 2022)
+
+
+eia_aeo_mwh_netimp_firstyr <- eia_aeo_mwh_netimp %>%
+  filter(year == min(year))
+
+eia_aeo_mwh_netimp_lastyr <- eia_aeo_mwh_netimp %>%
+  filter(year == max(year))
+
+eia_aeo_mwh_netimp_plotdata <- eia_aeo_mwh_netimp %>%
+  filter(scenarioDescription %in% c("Low Zero-Carbon Technology Cost", "High Zero-Carbon Technology Cost", "Reference case", "Low Oil and Gas Supply", "High Oil and Gas Supply"))
+
+US_MWH_netimpfrac_AEO_plot <- ggplot(eia_aeo_mwh_netimp_plotdata, aes(x = year, y = netimpfrac*100, group = scenario, color = scenario)) +
+  geom_line() +
+  geom_dl(aes(label = scenarioDescription),  method = list(dl.trans(x = x - 2.15), "last.bumpup")) +
+  scale_x_continuous(breaks = pretty_breaks(n = 12), limits = c(NA, max(eia_aeo_mwh_netimp$year) + 4)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * 100 * max(eia_aeo_mwh_netimp_plotdata$netimpfrac)), breaks = pretty_breaks(n = 8)) +
+  labs(x = "", y = "percentage", color = "") +
+  myFGtheme +
+  guides(color = guide_legend(nrow = 3))
+US_MWH_netimpfrac_AEO_plot
+
+ggsave("../Output/US_MWH_netimpfrac_AEO_plot.png", US_MWH_netimpfrac_AEO_plot, width = 7, height = 5.5, units = "in")
+write.csv(eia_aeo_mwh_netimp, file = "../Output/eia_aeo2023_mwh_netimp.csv", row.names = FALSE)
+
+
+```
+
+Combine historical and projected data on electricity net imports
+
+```{r comb_histproj_mwhnetimp, eval=T, echo=F, warning=F, message=F}
+
+# Combine historical data and projections
+
+eia_aeo_mwh_netimp_plotdata$data_type <- "projection"
+
+USnetimpfrac$scenario <- NA
+USnetimpfrac$scenarioDescription <- NA
+
+mwh_netimp_comb <- rbind(USnetimpfrac, eia_aeo_mwh_netimp_plotdata[,c("year", "netimpfrac", "data_type", "scenario", "scenarioDescription")] ) 
+
+mwh_netimp_comb_plotdata <- mwh_netimp_comb %>%
+  #filter(scenario %in% c("aeo2022ref", "ref2023", "highZTC", "lowZTC", "highmacro", "lowmacro", NA))
+  filter(scenario %in% c("ref2023", "highZTC", "lowZTC", "lowogs", "highogs", NA))
+  #filter(scenario_labels %in% c("High renewables cost", "High growth", "Low renewables cost", "Low growth", "Reference", NA))
+
+mwh_netimp_comb_plotdata <- mwh_netimp_comb_plotdata %>%
+  mutate(scenarioDescription2 = ifelse(scenarioDescription == "High Zero-Carbon Technology Cost", "High Zero-Carbon \nTechnology Cost",
+                                       ifelse(scenarioDescription == "Low Zero-Carbon Technology Cost", "Low Zero-Carbon \nTechnology Cost",
+                                              ifelse(scenarioDescription == "Low Oil and Gas Supply", "Low Oil and Gas \nSupply",
+                                                     ifelse(scenarioDescription == "High Oil and Gas Supply", "High Oil and Gas \nSupply",scenarioDescription)))))
+
+US_MWH_netimpfrac_comb_plot <- ggplot(mwh_netimp_comb_plotdata, aes(x = year, y = netimpfrac*100, group = scenarioDescription2, color = scenarioDescription2)) +
+  #facet_wrap(~data_type, scales = "free_x") +
+  geom_line(size = 1) +
+  geom_rect(xmin = 2008, xmax = 2021.5, ymin = 1.8, ymax = 2, fill = "grey", color = "grey", alpha = 0.3) +
+  annotate('text', label = "Historical", x = 2013, y = 1.88 , color = "black", size = 4, font = "bold") +
+  geom_rect(xmin = 2021.8, xmax = max(mwh_netimp_comb_plotdata$year) + 14, ymin = 1.8, ymax = 2, fill = "grey", color = "grey", alpha = 0.3) +
+  annotate('text', label = "Projections", x = 2035, y = 1.88 , color = "black", size = 4, font = "bold") +
+  geom_dl(aes(label = scenarioDescription2),  method = list(dl.trans(x = x - 0.05), cex = 0.8, rot = 0, "last.bumpup")) +
+  #geom_dl(aes(label = scenario_labels),  method = list(cex = 0.5, "last.qp")) +
+  scale_x_continuous(expand = c(0,0), limits = c(2008, max(mwh_netimp_comb_plotdata$year) + 11), breaks = seq(2010, 2050, by = 5), labels = seq(2010, 2050, by = 5)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.2 * 100 * max(mwh_netimp_comb_plotdata$netimpfrac)), breaks = pretty_breaks(n = 8)) +
+  labs(x = "", y = "percentage", color = "") +
+  myFGtheme +
+  theme(legend.position = "none",
+        panel.border = element_rect(color = "grey", fill = NA)) 
+US_MWH_netimpfrac_comb_plot
+
+ggsave("../Output/US_MWH_netimpfrac_comb_plot.png", US_MWH_netimpfrac_comb_plot, width = 6.5, height = 4, units = "in")
+```
+
+Collect data on net imports for each of the fuels used to produce electricity in the United States  
+
+```{r mwhfuelmx, eval=T, echo=F, warning=F, message=F}
+
+#COAL
+#https://www.eia.gov/energyexplained/coal/
+#Coal types used for electricity generation: bituminous, subbituminous, lignite
+
+##Imports: https://www.eia.gov/international/data/world/coal-and-coke/coal-and-coke-imports
+
+#Units are thousand short tons
+UScoal_m <- read.csv("../Data/energy_independence/coalimports-INT-Export-04-02-2024_16-47-04.csv", skip = 1) %>%
+  slice(1984:1989) %>%
+  rename(type = X) %>%
+  mutate(type = str_trim(type),
+         type = gsub(" \\(Mst\\)", "", type)) %>%
+  filter(type %in% c("Bituminous", "Subbituminous", "Lignite")) %>%
+  pivot_longer(cols = -c(API, type), names_to = "year", values_to = "value") %>%
+  mutate(year = as.numeric(gsub("X", "", year)),
+         value = as.numeric(as.character(value)))
+
+UScoal_m_summary_byyrtype <- UScoal_m %>%
+  group_by(year, type) %>%
+  summarise(imports = sum(value, na.rm = T))
+
+UScoal_m_summary_byyr <- UScoal_m %>%
+  group_by(year) %>%
+  summarise(imports = sum(value, na.rm = T))
+
+##Exports: https://www.eia.gov/international/data/world/coal-and-coke/coal-and-coke-exports
+
+#Units are thousand short tons
+UScoal_x <- read.csv("../Data/energy_independence/coalexports-INT-Export-04-02-2024_16-47-28.csv", skip = 1) %>%
+  slice(1984:1989) %>%
+  rename(type = X) %>%
+  mutate(type = str_trim(type),
+         type = gsub(" \\(Mst\\)", "", type)) %>%
+  filter(type %in% c("Bituminous", "Subbituminous", "Lignite")) %>%
+  pivot_longer(cols = -c(API, type), names_to = "year", values_to = "value") %>%
+  mutate(year = as.numeric(gsub("X", "", year)),
+         value = as.numeric(as.character(value)))
+
+UScoal_x_summary_byyrtype <- UScoal_x %>%
+  group_by(year, type) %>%
+  summarise(exports = sum(value, na.rm = T))
+
+UScoal_x_summary_byyr <- UScoal_x %>%
+  group_by(year) %>%
+  summarise(exports = sum(value, na.rm = T))
+
+
+##Consumption: https://www.eia.gov/international/data/world/coal-and-coke/coal-and-coke-consumption
+
+#Units are thousand short tons
+UScoal_c <- read.csv("../Data/energy_independence/coalconsumption-INT-Export-04-02-2024_16-48-16.csv", skip = 1) %>%
+  slice(1984:1989) %>%
+  rename(type = X) %>%
+  mutate(type = str_trim(type),
+         type = gsub(" \\(Mst\\)", "", type)) %>%
+  filter(type %in% c("Bituminous", "Subbituminous", "Lignite")) %>%
+  pivot_longer(cols = -c(API, type), names_to = "year", values_to = "value") %>%
+  mutate(year = as.numeric(gsub("X", "", year)),
+         value = as.numeric(as.character(value)))
+
+UScoal_c_summary_byyrtype <- UScoal_c %>%
+  group_by(year, type) %>%
+  summarise(consumption = sum(value, na.rm = T))
+
+UScoal_c_summary_byyr <- UScoal_c %>%
+  group_by(year) %>%
+  summarise(consumption = sum(value, na.rm = T))
+
+
+UScoal_tradebal_byyrtype <- left_join(UScoal_m_summary_byyrtype, UScoal_x_summary_byyrtype, by = c("year", "type")) %>%
+  left_join(UScoal_c_summary_byyrtype, by = c("year", "type")) %>%
+  mutate(netimp = imports - exports,
+         netimpfrac = netimp/consumption)
+
+UScoal_tradebal_byyr <- left_join(UScoal_m_summary_byyr, UScoal_x_summary_byyr, by = "year") %>%
+  left_join(UScoal_c_summary_byyr, by = c("year")) %>%
+  mutate(netimp = imports - exports,
+         netimpfrac = netimp/consumption) %>%
+  filter(year > 2009) %>%
+  mutate(fuel = "steam coal")
+
+
+#DRY NATURAL GAS
+#These numbers include imports/exports by pipeline and LNG (https://www.eia.gov/todayinenergy/detail.php?id=49156)
+##Imports: https://www.eia.gov/international/data/world/natural-gas/dry-natural-gas-imports
+
+#Units are Bcfs
+USdng_m <- read.csv("../Data/energy_independence/drygasimports-INT-Export-04-02-2024_16-53-58.csv", skip = 1) %>%
+  slice(2:n()) %>%
+  rename(country = X) %>%
+  mutate(country = str_trim(country)) %>%
+  filter(country %in% c("United States")) %>%
+  pivot_longer(cols = -c(API, country), names_to = "year", values_to = "imports") %>%
+  mutate(year = as.numeric(gsub("X", "", year)),
+         imports = as.numeric(as.character(imports)))
+
+##Exports: https://www.eia.gov/international/data/world/natural-gas/dry-natural-gas-exports
+
+#Units are Bcfs
+USdng_x <- read.csv("../Data/energy_independence/drygasexports-INT-Export-04-02-2024_16-54-18.csv", skip = 1) %>%
+  slice(2:n()) %>%
+  rename(country = X) %>%
+  mutate(country = str_trim(country)) %>%
+  filter(country %in% c("United States")) %>%
+  pivot_longer(cols = -c(API, country), names_to = "year", values_to = "exports") %>%
+  mutate(year = as.numeric(gsub("X", "", year)),
+         exports = as.numeric(as.character(exports)))
+  
+USdng_tradebal_byyr <- left_join(USdng_m, USdng_x, by = c("year", "country")) %>%
+  mutate(netimp = imports - exports)
+
+##Consumption: https://www.eia.gov/international/data/world/natural-gas/dry-natural-gas-consumption
+
+USdng_c <- read.csv("../Data/energy_independence/drygasconsumption-INT-Export-04-02-2024_16-55-05.csv", skip = 1) %>%
+  slice(2:n()) %>%
+  rename(country = X) %>%
+  mutate(country = str_trim(country)) %>%
+  filter(country %in% c("United States")) %>%
+  pivot_longer(cols = -c(API, country), names_to = "year", values_to = "consumption") %>%
+  mutate(year = as.numeric(gsub("X", "", year)),
+         consumption = as.numeric(as.character(consumption)))
+  
+USdng_tradebal_byyr <- left_join(USdng_m, USdng_x, by = c("year", "country")) %>%
+  left_join(USdng_c, by = c("year", "country")) %>%
+  mutate(netimp = imports - exports,
+         netimpfrac = netimp/consumption) %>%
+  filter(year > 2009) %>%
+  mutate(fuel = "natural gas")
+
+#URANIUM
+#https://www.eia.gov/energyexplained/nuclear/where-our-uranium-comes-from.php
+
+#https://www.eia.gov/uranium/marketing/summarytable2.php (2021 Uranium Marketing Annual Report)
+##Uranium in fuel assemblies loaded into U.S. civilian nuclear power reactors (proxy for uranium use)
+
+#Units are million pounds of U3O8 equivalent
+ur_loadings <- read_excel("../Data/energy_independence/umartableS2figuresS3n4.xls", range = "A19:C30", col_names = F) %>%
+  dplyr::select(c(1,3)) %>%
+  rename(year = `...1`, loaded_assemblies = `...3`)
+
+#Purchases by origin
+#https://www.eia.gov/uranium/marketing/ (Table S1a)
+ur_purchases <- read_excel("../Data/energy_independence/umartableS1afigureS1.xls", range = "A19:J30", col_names = F) %>%
+  dplyr::select(c(1,2,7,8)) %>%
+  rename(year = `...1`, total_purchases = `...2`, us_uranium = `...7`, foreign_uranium = `...8`) %>%
+  mutate(us_uranium = ifelse(us_uranium == "W", NA, us_uranium),
+         foreign_uranium = ifelse(foreign_uranium == "W", NA, foreign_uranium),
+         us_uranium = as.numeric(us_uranium),
+         foreign_uranium = as.numeric(foreign_uranium))
+
+#Import fraction
+ur_impfrac <- left_join(ur_purchases, ur_loadings, by = "year") %>%
+  mutate(impfrac = ifelse(is.na(foreign_uranium), NA, foreign_uranium/total_purchases)) %>%
+  mutate(fuel = "uranium oxide")
+
+#Note: loaded assemblies can differ from total purchases by more than a rounding error.
+
+
+#PETROLEUM
+
+#https://www.eia.gov/energyexplained/electricity/electricity-in-the-us.php#:~:text=Petroleum%20was%20the%20source%20of,be%20burned%20in%20gas%20turbines.
+#Petroleum was the source of less than 1% of U.S. electricity generation in 2021. Residual fuel oil and petroleum coke are used in steam turbines. Distillate or diesel fuel oil is used in diesel-engine generators. Residual fuel oil and distillates can also be burned in gas turbines.
+
+#Exports by Type
+#https://www.eia.gov/dnav/pet/pet_move_exp_dc_NUS-Z00_mbblpd_a.htm
+
+#Units are thousand barrels per day
+petliq_exports <- read_excel("../Data/energy_independence/PET_MOVE_EXP_DC_NUS-Z00_MBBLPD_A.xls", sheet = "Data 1", skip = 2, col_names = T) %>%
+  mutate(year = as.numeric(substr(as.character(Date), 1, 4))) %>%
+  filter(year > 2009) %>%
+  dplyr::select(year, `U.S. Exports of Distillate Fuel Oil (Thousand Barrels per Day)`, `U.S. Exports of Residual Fuel Oil (Thousand Barrels per Day)`, `U.S. Exports of Petroleum Coke (Thousand Barrels per Day)`) %>%
+  pivot_longer(c(2:4), names_to = "product", values_to = "exports") %>%
+  mutate(product = gsub("U.S. Exports of ", "", product))
+
+
+petliq_exports_summary_byyrtype <- petliq_exports %>%
+  group_by(year, product) %>%
+  summarise(exports = sum(exports))
+
+petliq_exports_summary_byyr <- petliq_exports %>%
+  group_by(year) %>%
+  summarise(exports = sum(exports))
+
+
+#Imports by Type
+#https://www.eia.gov/dnav/pet/pet_move_imp_dc_NUS-Z00_mbblpd_a.htm
+
+#Units are thousand barrels per day
+petliq_imports <- read_excel("../Data/energy_independence/PET_MOVE_IMP_DC_NUS-Z00_MBBLPD_A.xls", sheet = "Data 1", skip = 2, col_names = T) %>%
+  mutate(year = as.numeric(substr(as.character(Date), 1, 4))) %>%
+  filter(year > 2009) %>%
+  dplyr::select(year, `U.S. Imports of Distillate Fuel Oil (Thousand Barrels per Day)`, `U.S. Imports of Residual Fuel Oil (Thousand Barrels per Day)`, `U.S. Imports of Petroleum Coke (Thousand Barrels per Day)`) %>%
+  pivot_longer(c(2:4), names_to = "product", values_to = "imports") %>%
+  mutate(product = gsub("U.S. Imports of ", "", product))
+
+
+petliq_imports_summary_byyrtype <- petliq_imports %>%
+  group_by(year, product) %>%
+  summarise(imports = sum(imports))
+
+petliq_imports_summary_byyr <- petliq_imports %>%
+  group_by(year) %>%
+  summarise(imports = sum(imports))
+
+
+#Product supplied (proxy for consumption)
+#https://www.eia.gov/dnav/pet/pet_cons_psup_dc_nus_mbblpd_a.htm
+
+#Units are thousand barrels per day
+petliq_supplied <- read_excel("../Data/energy_independence/PET_CONS_PSUP_DC_NUS_MBBLPD_A.xls", sheet = "Data 1", skip = 2, col_names = T) %>%
+  mutate(year = as.numeric(substr(as.character(Date), 1, 4))) %>%
+  filter(year > 2009) %>%
+  dplyr::select(year, `U.S. Product Supplied of Distillate Fuel Oil (Thousand Barrels per Day)`, `U.S. Product Supplied of Residual Fuel Oil (Thousand Barrels per Day)`, `U.S. Product Supplied of Petroleum Coke (Thousand Barrels per Day)`) %>%
+  pivot_longer(c(2:4), names_to = "product", values_to = "supply") %>%
+  mutate(product = gsub("U.S. Product Supplied of ", "", product))
+
+
+petliq_supplied_summary_byyrtype <- petliq_supplied %>%
+  group_by(year, product) %>%
+  summarise(supply = sum(supply))
+
+petliq_supplied_summary_byyr <- petliq_supplied %>%
+  group_by(year) %>%
+  summarise(supply = sum(supply))
+
+
+petliq_tradebal_byyrtype <- left_join(petliq_imports_summary_byyrtype, petliq_exports_summary_byyrtype, by = c("year", "product")) %>%
+  left_join(petliq_supplied_summary_byyrtype, by = c("year", "product")) %>%
+  mutate(netimp = imports - exports,
+         netimpfrac = netimp/supply)
+
+petliq_tradebal_byyr <- left_join(petliq_imports_summary_byyr, petliq_exports_summary_byyr, by = c("year")) %>%
+  left_join(petliq_supplied_summary_byyr, by = c("year")) %>%
+  mutate(netimp = imports - exports,
+         netimpfrac = netimp/supply) %>%
+  mutate(fuel = "petroleum")
+
+
+#Combine net import fractions for the various fuels
+
+ur_impfrac_2 <- ur_impfrac %>%
+  rename(netimpfrac = impfrac)  #I need to do change name to combine with the other fuels but the variable I have for uranium is import fraction of purchases rather than net import fraction of use
+
+netimpfrac_comb <- rbind(UScoal_tradebal_byyr[,c("year", "fuel", "netimpfrac")], USdng_tradebal_byyr[,c("year", "fuel", "netimpfrac")], ur_impfrac_2[,c("year", "fuel", "netimpfrac")], petliq_tradebal_byyr[,c("year", "fuel", "netimpfrac")]) %>%
+  mutate(netimpfrac = ifelse(netimpfrac == "-Inf", NA, netimpfrac)) %>%
+  mutate(fuel = as.factor(fuel)) %>%
+  mutate(facet_title = "U.S. net imports as a percentage \nof total consumption") %>%
+  filter(year > 2009)
+
+netimpfrac_comb$fuel <- factor(netimpfrac_comb$fuel, levels = c("uranium oxide", "petroleum", "natural gas", "steam coal"))
+
+netimpfrac_mwhfuel_plot <- ggplot(netimpfrac_comb, aes(x = year, y = netimpfrac*100, group = fuel, color = fuel)) +
+  geom_point() +
+  geom_line(size = 1) +
+  facet_wrap(~facet_title) +
+  geom_hline(yintercept = 0) +
+  scale_x_continuous(expand = c(0,0), limits = c(2010, 2022.5), breaks = seq(2010, 2022, by = 2), labels = seq(2010, 2022, by = 2)) +
+  scale_y_continuous(expand = c(0,0), limits = c(1.1 * 100 * min(netimpfrac_comb$netimpfrac, na.rm = T), 1.1 * 100 * max(netimpfrac_comb$netimpfrac, na.rm = T)), breaks = pretty_breaks(n = 8)) +
+  scale_color_manual(values = EERE.palette.long[c(10,6,3,2)]) +
+  labs(x = "", y = "percentage", color = "Fuel Type") +
+  myFGtheme +
+  guides(color = guide_legend(nrow = 2, reverse = T, byrow = T, title.position = "top")) +
+  theme(legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-7,-7,-7,-7))
+netimpfrac_mwhfuel_plot
+
+
+#U.S. electricity net generation by major energy source
+#Source: Monthly Energy Review Table 7.2a
+
+#Units are million kilowatthours
+elecgenmix <- read_excel("../Data/energy_independence/Table_7.2a_Electricity_Net_Generation__Total_(All_Sectors).xlsx", sheet = "Annual Data", skip = 10, col_names = T) %>%
+  rename(year = `Annual Total`) %>%
+  filter(!is.na(year)) %>%
+  filter(year > 2010) %>%
+  pivot_longer(cols = -c(year), names_to = "series", values_to = "value") %>%
+  mutate(value = as.numeric(as.character(value))) %>%
+  mutate(source = ifelse(grepl("Coal", series) == T, "coal",
+                         ifelse(grepl("Natural Gas", series) == T, "natural gas",
+                                ifelse(grepl("Petroleum", series) == T, "petroleum",
+                                       ifelse(grepl("Nuclear", series) == T, "nuclear", 
+                                              ifelse(grepl("Total", series) == T, "total", "renewables"))))))  #note: other includes conventional hydro, pumped hydro, wood, waste, geothermal, solar, wind
+
+
+elecgenmix_2 <- elecgenmix %>%
+  filter(source != "total") %>%
+  group_by(year, source) %>%
+  summarise(value = sum(value)) %>%
+  group_by(year) %>%
+  mutate(total = sum(value)) %>%
+  mutate(frac = value/total) %>%
+  mutate(source = as.factor(source)) %>%
+  mutate(facet_title = "U.S. electricity net generation mix \nby major fuel source")
+
+elecgenmix_2_detailed <- elecgenmix %>%
+  filter(source != "total") %>%
+  group_by(year, source, series) %>%
+  summarise(value = sum(value)) %>%
+  group_by(year) %>%
+  mutate(total = sum(value)) %>%
+  mutate(percentage = (value/total)*100)
+
+elecgenmix_2_detailed_summary <- elecgenmix_2_detailed %>%
+  group_by(series) %>%
+  summarise (percentage = mean(percentage))
+
+elecgenmix_2$source <- factor(elecgenmix_2$source, levels = c("renewables", "nuclear", "petroleum", "natural gas", "coal"))
+
+
+elecgenmix_plot <- ggplot(elecgenmix_2, aes(x = year, y = frac *100, group = source, fill = source)) +
+  geom_area() +
+  facet_wrap(~facet_title) +
+  scale_x_continuous(expand = c(0,0), breaks = seq(2010, 2022, by = 2), labels = seq(2010, 2022, by = 2)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 101), breaks = pretty_breaks(n = 6)) +
+  scale_fill_manual(values = EERE.palette.long[c(5,10,6,3,2)]) +
+  labs(x = "", y = "percentage", fill = "Energy Source") +
+  myFGtheme +
+  guides(fill = guide_legend(nrow = 2, reverse = T, byrow = T, title.position = "top", keywidth = 0.75)) +
+  theme(legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-7,-7,-7,-7))
+elecgenmix_plot  
+
+
+#Combine plots
+
+elecgenmixtrdbal_plot <- grid.arrange(netimpfrac_mwhfuel_plot, elecgenmix_plot, nrow = 1)
+
+ggsave("../Output/elecgenmixtrdbal_plot.png", elecgenmixtrdbal_plot, width = 6.5, height = 4.5, units = "in")
+
+```
+
+```{r readAPI_exptosupply, eval=F, warning=F, message=F}
+#Download data from EIA's International Energy Statistics on production and exports of different fuels to explore evolution of exports-to-production ratio
+
+##World exports of crude oil (including lease condensate)
+ies_x_crudeoil_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/international/data/?frequency=annual&data[0]=value&facets[activityId][]=4&facets[productId][]=57&facets[countryRegionId][]=WORL&facets[unit][]=TBPD&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=",my_eia_API_key)) %>%
+  unique()
+
+save(ies_x_crudeoil_df, file = "../Data/energy_independence/ies_x_crudeoil_df")
+
+##World production of crude oil (including lease condensate)
+ies_prod_crudeoil_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/international/data/?frequency=annual&data[0]=value&facets[activityId][]=1&facets[productId][]=57&facets[countryRegionId][]=WORL&facets[unit][]=TBPD&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=",my_eia_API_key)) %>%
+  unique()
+
+save(ies_prod_crudeoil_df, file = "../Data/energy_independence/ies_prod_crudeoil_df")
+
+##World exports of natural gas
+ies_x_natgas_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/international/data/?frequency=annual&data[0]=value&facets[activityId][]=4&facets[productId][]=26&facets[countryRegionId][]=WORL&facets[unit][]=BCF&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=",my_eia_API_key)) %>%
+  unique()
+
+save(ies_x_natgas_df, file = "../Data/energy_independence/ies_x_natgas_df")
+
+##World production of natural gas
+ies_prod_natgas_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/international/data/?frequency=annual&data[0]=value&facets[activityId][]=1&facets[productId][]=26&facets[countryRegionId][]=WORL&facets[unit][]=BCF&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=",my_eia_API_key)) %>%
+  unique()
+
+save(ies_prod_natgas_df, file = "../Data/energy_independence/ies_prod_natgas_df")
+
+##World exports of electricity
+ies_x_mwh_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/international/data/?frequency=annual&data[0]=value&facets[activityId][]=4&facets[productId][]=2&facets[countryRegionId][]=WORL&facets[unit][]=BKWH&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=",my_eia_API_key)) %>%
+  unique()
+
+save(ies_x_mwh_df, file = "../Data/energy_independence/ies_x_mwh_df")
+
+##World production of electricity
+ies_prod_mwh_df <- eia_api_v2_read(paste0("https://api.eia.gov/v2/international/data/?frequency=annual&data[0]=value&facets[activityId][]=12&facets[productId][]=2&facets[countryRegionId][]=WORL&facets[unit][]=BKWH&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=",my_eia_API_key)) %>%
+  unique()
+
+save(ies_prod_mwh_df, file = "../Data/energy_independence/ies_prod_mwh_df")
+```
+
+
+```{r exptosupply, eval=T, warning=F, message=F}
+
+load("../Data/energy_independence/ies_x_crudeoil_df") 
+
+ies_x_crudeoil_df <- ies_x_crudeoil_df %>%
+  rename(exports = value) %>%
+  dplyr::select(period, productName, countryRegionName, exports)
+
+load("../Data/energy_independence/ies_prod_crudeoil_df")
+
+ies_prod_crudeoil_df <- ies_prod_crudeoil_df %>%
+  rename(production = value) %>%
+  select(period, productName, countryRegionName, production)
+
+load("../Data/energy_independence/ies_x_natgas_df") 
+
+ies_x_natgas_df <- ies_x_natgas_df %>%
+  rename(exports = value) %>%
+  select(period, productName, countryRegionName, exports)
+
+load("../Data/energy_independence/ies_prod_natgas_df") 
+
+ies_prod_natgas_df <- ies_prod_natgas_df %>%
+  rename(production = value) %>%
+  select(period, productName, countryRegionName, production)
+
+load("../Data/energy_independence/ies_x_mwh_df") 
+
+ies_x_mwh_df <- ies_x_mwh_df %>%
+  rename(exports = value) %>%
+  select(period, productName, countryRegionName, exports)
+
+load("../Data/energy_independence/ies_prod_mwh_df") 
+
+ies_prod_mwh_df <- ies_prod_mwh_df %>%
+  rename(production = value) %>%
+  select(period, productName, countryRegionName, production)
+
+xtosupply_crudeoil <- ies_x_crudeoil_df %>%
+  left_join(ies_prod_crudeoil_df, by = c("period", "productName", "countryRegionName")) 
+
+xtosupply_natgas <- ies_x_natgas_df %>%
+  left_join(ies_prod_natgas_df, by = c("period", "productName", "countryRegionName"))  
+
+xtosupply_mwh <- ies_x_mwh_df %>%
+  left_join(ies_prod_mwh_df, by = c("period", "productName", "countryRegionName"))
+
+xtosupply <- rbind(xtosupply_crudeoil, xtosupply_natgas, xtosupply_mwh) %>%
+  mutate_at(c("exports", "production", "period"), as.numeric) %>%
+  mutate(xtosupply = (exports/production)*100) %>%
+  mutate(productName2 = ifelse(productName == "Crude oil including lease condensate", "Crude oil \n(including lease condensate)", productName))
+
+xtosupply_plot <- ggplot(xtosupply, aes(x=period, y=xtosupply, group = productName2)) +
+  geom_line(size = 1) +
+  labs(x="", y="percentage") +
+  facet_wrap(~productName2, nrow = 1) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,100)) +
+  scale_x_continuous(breaks = pretty_breaks(n=5)) +
+  myFGtheme
+xtosupply_plot
+
+ggsave("../Output/xtosupply_plot.png", xtosupply_plot, width = 6.5, height = 3.5, units = "in")
+```
+
+

@@ -1,0 +1,250 @@
+---
+title: "PEVS and Energy Security: Systematic Review"
+author: "Rocio Uria-Martinez"
+date: "07/10/2023"
+output: html_document
+---
+
+```{r LoadLibraries, eval = T}
+
+library(tidyverse)
+library(readxl)
+library(scales) 
+library(purrr)
+```
+
+```{r PlotFormatTheme, eval = T}
+
+EERE.palette.long <- c("#007934", "#5E6A71", "#E37222", "#FECB00", "#69BE28", "#1F82BB", "#005B82", "#C3C8C8", "#9865AA", "#9E2432")
+EERE.palette.names <- c("DarkGreen", "DarkGrey", "DarkOrange", "EggYolk", "PistachioGreen", "AquaBlue", "DarkBlue", "LightGrey", "Purple", "DarkRed")
+############################################################################
+
+##custom plot theme
+myFGtheme <- theme_bw() +   
+  theme(text=element_text(family="Franklin Gothic Book", size=12)) +
+  theme(axis.text = element_text(size=9), axis.title=element_text(size=9, face="bold", family = "Franklin Gothic Medium")) +
+  #theme(axis.text.x = element_text(angle = 65, vjust = .95,hjust=.95))+
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "grey", linewidth = 0.5), panel.grid.minor.y = element_line(color = "white"),
+        panel.background = element_blank(),
+        strip.background = element_rect(color = "white"),
+        axis.line = element_line(colour = "grey", linewidth = 0.5), panel.border = element_blank()) +
+  theme(legend.direction = "horizontal", legend.position = "bottom", legend.box = "vertical", legend.title.align = 0, legend.key=element_blank()) + 
+  theme(legend.title=element_text(size = 12, family = "Franklin Gothic Medium", face = "bold"))
+```
+
+Searches in Scopus:
+https://www.scopus.com/search/form.uri?display=basic#basic
+
+Searches in Web of Science:
+https://www.webofscience.com/wos/woscc/advanced-search
+
+The initial queries looked for records published from 2010 on that included in the title, keywords, or abstract "PEV" or "PEVs" or "PHEV" or "PHEVs" or "EV" or "EVs" or "electric vehicle" or "electric vehicles" and "energy security" 
+
+Note: the data with a _2 suffix comes from later expanded search for "BEV" or "BEVs" or "ZEV" or "ZEVs" and "energy security". Google Scholar returned zero records for that expanded search
+
+```{r readData, eval = T}
+
+scopus <- read.csv("../Data/systematic_review/scopus_PEV_ES_20230710.csv") %>%
+  mutate(in_scopus = 1)
+
+#387 entries of which 44 do not have DOI
+
+scopus_2 <- read.csv("../Data/systematic_review/scopus_BEVZEV_ES_20230724.csv") %>%
+  mutate(in_scopus = 1)
+#26 entries of which 2 do not have DOI
+
+
+webofscience <- read_excel("../Data/systematic_review/savedrecs_WoS_PEV_ES_20230710.xls") %>%
+  mutate(in_wos = 1)
+
+#247 entries out of which 47 do not have DOI
+
+webofscience_2 <- read_excel("../Data/systematic_review/savedrecs_WoS_BEVZEV_ES_20230724.xls") %>%
+  mutate(in_wos = 1)
+#13 entries of which 0 do not have DOI
+
+googlescholar <- read.csv("../Data/systematic_review/GoogleScholarcitations_PEV_ES_20230710.csv") %>%
+  mutate(in_scholar = 1)
+
+#Google Scholar citations do not include DOI
+
+```
+
+```{r selectUnique, eval = T}
+scopus_select <- scopus %>%
+  select(Authors, Title, Year, Source.title, Volume, Issue, Page.start, Page.end, DOI, Abstract, in_scopus) %>%
+  rename(SourceTitle = Source.title, StartPage = Page.start, EndPage = Page.end)
+
+scopus_select_DOI <- scopus_select %>%
+  filter(DOI != "") %>%
+  mutate_at(c("Volume", "Issue", "StartPage", "EndPage"), as.integer) %>%
+  filter(!(Authors == "Cornils H." & is.na(Volume))) %>%
+  filter(!(Authors == "Veenstra M.J.; Gearhart C." & is.na(Volume))) %>%
+  filter(!(Authors == "Eberle U.; Von Helmolt R." & SourceTitle == "Electric and Hybrid Vehicles: Power Sources, Models, Sustainability, Infrastructure and the Market"))
+
+scopus_select_noDOI <- scopus_select %>%
+  filter(DOI == "") %>%
+  mutate_at(c("Volume", "Issue", "StartPage", "EndPage"), as.integer) %>%
+  mutate(database = "scopus") %>%
+  select(-in_scopus)
+
+webofscience_select <- webofscience %>%
+  select(Authors, `Article Title`, `Publication Year`,`Source Title`, Volume, Issue, `Start Page`, `End Page`, DOI, Abstract, in_wos) %>%
+  rename(Title = `Article Title`, Year = `Publication Year`, SourceTitle = `Source Title`, StartPage = `Start Page`, EndPage = `End Page`)
+
+webofscience_select_DOI <- webofscience_select %>%
+  filter(DOI != "") %>%
+  mutate_at(c("Issue", "EndPage"), as.integer)
+
+webofscience_select_noDOI <- webofscience_select %>%
+  filter(is.na(DOI)) %>%
+  mutate_at(c("Issue", "EndPage"), as.integer) %>%
+  mutate(database = "WoS") %>%
+  select(-in_wos)
+
+googlescholar_select <- googlescholar %>%
+  select(Authors, Title, Publication, Volume, Number, Pages, Year) %>%
+  separate(Pages, into = c("StartPage", "EndPage"), sep = "-") %>%
+  rename(SourceTitle = Publication, 
+         Issue = Number) %>%
+  mutate(Abstract = NA,
+         DOI = NA,
+         database = "scholar")
+
+###Remove duplicate entries by DOI
+
+scopus_wos_DOI_join <- scopus_select_DOI %>%
+  full_join(webofscience_select_DOI[,c("DOI", "in_wos")], by = "DOI") 
+
+unique_DOIs_notinscopus <- scopus_wos_DOI_join %>%
+  filter(is.na(in_scopus)) %>%
+  pull(DOI)
+
+webofscience_select_DOI_notinscopus <- webofscience_select_DOI %>%
+  filter(DOI %in% unique_DOIs_notinscopus)
+
+unique_DOIs <- rbind(scopus_select_DOI[-c(11)], webofscience_select_DOI_notinscopus[-c(11)]) 
+
+#This should be an empty set if I successfully removed the duplicates
+dup_DOIs <- unique_DOIs %>%
+  group_by(DOI) %>%
+  summarise(count = n()) %>%
+  filter(count == 2) %>%
+  pull(DOI)
+
+#This should have zero rows if I successfully removed the duplicates
+view_dup_records <- unique_DOIs %>%
+  filter(DOI %in% dup_DOIs)
+
+###Remove duplicate entries based on other attributes (for entries without DOIs)
+
+scopus_wos_scholar_nonDOI_join <- rbind(scopus_select_noDOI, webofscience_select_noDOI, googlescholar_select) %>%
+  filter(Authors != "") %>%
+  separate(Authors, into = c("firstauthor", "rest"), sep = " ", remove = FALSE) %>%
+  select(-rest) %>%
+  mutate(firstauthor = gsub(",", "", firstauthor),
+         label = paste(firstauthor, Year, sep = "_")) %>%
+  filter(!(firstauthor == "Horn" & database == "WoS")) %>%
+  filter(!(label == "Kang_2015" & database == "WoS")) %>%
+  filter(!(firstauthor == "Popczyk" & database == "WoS")) %>%
+  filter(!(firstauthor == "Shiiki"  & Volume == 2)) %>%
+  filter(!(label == "Schmidt_2013" & is.na(Volume))) %>%
+  filter(!(label == "Sovacool_2010" & is.na(Volume))) %>%
+  filter(!(label == "Zhang_2015" & EndPage == "Jan"))
+
+#This has one remaining row from one instance in which two papers have the same author_year label 
+dup_labels <- scopus_wos_scholar_nonDOI_join %>%
+  group_by(label) %>%
+  summarise(count = n()) %>%
+  filter(count > 1) %>%
+  pull(label)
+
+#This has two remaining rows from one instance in which two papers have the same author_year label 
+view_dup_records <- scopus_wos_scholar_nonDOI_join %>%
+  filter(label %in% dup_labels)
+
+#scopus_wos_DOI_join_2 <- scopus_wos_DOI_join %>%
+#  select(-in_scopus, -in_wos)
+
+scopus_wos_scholar_nonDOI_join_2 <- scopus_wos_scholar_nonDOI_join %>%
+  select(-label, -firstauthor, -database)
+
+scopus_wos_scholar_unique <- rbind(unique_DOIs, scopus_wos_scholar_nonDOI_join_2) %>%
+  arrange(Year, Authors)
+
+write.csv(scopus_wos_scholar_unique, "../Output/scopus_wos_scholar_unique.csv", row.names = F)
+
+```
+
+```{r selectUnique_BEVZEV, eval = T}
+scopus_2_select <- scopus_2 %>%
+  select(Authors, Title, Year, Source.title, Volume, Issue, Page.start, Page.end, DOI, Abstract, in_scopus) %>%
+  rename(SourceTitle = Source.title, StartPage = Page.start, EndPage = Page.end)
+
+scopus_2_select_DOI <- scopus_2_select %>%
+  filter(DOI != "") %>%
+  mutate_at(c("Volume", "Issue", "StartPage", "EndPage"), as.integer) 
+
+scopus_2_select_noDOI <- scopus_2_select %>%
+  filter(DOI == "") %>%
+  mutate_at(c("Volume", "Issue", "StartPage", "EndPage"), as.integer) %>%
+  mutate(database = "scopus") %>%
+  select(-in_scopus)
+
+webofscience_2_select <- webofscience_2 %>%
+  select(Authors, `Article Title`, `Publication Year`,`Source Title`, Volume, Issue, `Start Page`, `End Page`, DOI, Abstract, in_wos) %>%
+  rename(Title = `Article Title`, Year = `Publication Year`, SourceTitle = `Source Title`, StartPage = `Start Page`, EndPage = `End Page`)
+
+webofscience_2_select_DOI <- webofscience_2_select %>%
+  filter(DOI != "") %>%
+  mutate_at(c("Issue", "EndPage"), as.integer)
+
+webofscience_2_select_noDOI <- webofscience_2_select %>%
+  filter(is.na(DOI)) %>%
+  mutate_at(c("Issue", "EndPage"), as.integer) %>%
+  mutate(database = "WoS") %>%
+  select(-in_wos)
+
+###Remove duplicate entries by DOI
+
+scopus_wos_2_DOI_join <- scopus_2_select_DOI %>%
+  full_join(webofscience_2_select_DOI[,c("DOI", "in_wos")], by = "DOI") 
+
+unique_DOIs_notinscopus_2 <- scopus_wos_2_DOI_join %>%
+  filter(is.na(in_scopus)) %>%
+  pull(DOI)
+
+webofscience_select_DOI_notinscopus_2 <- webofscience_2_select_DOI %>%
+  filter(DOI %in% unique_DOIs_notinscopus_2)
+
+unique_DOIs_2 <- rbind(scopus_2_select_DOI[-c(11)], webofscience_select_DOI_notinscopus_2[-c(11)]) 
+
+#This should be an empty set if I successfully removed the duplicates
+dup_DOIs_2 <- unique_DOIs_2 %>%
+  group_by(DOI) %>%
+  summarise(count = n()) %>%
+  filter(count == 2) %>%
+  pull(DOI)
+
+#This should have zero rows if I successfully removed the duplicates
+view_dup_records_2 <- unique_DOIs_2 %>%
+  filter(DOI %in% dup_DOIs_2)
+
+scopus_wos_2_unique <- rbind(unique_DOIs_2, scopus_2_select_noDOI[-c(11)]) %>%
+  arrange(Year, Authors)
+
+write.csv(scopus_wos_2_unique, "../Output/scopus_wos_2_unique.csv", row.names = F)
+
+```
+
+None of the references from the expanded search (BEV/ZEV) is unique relative to the initial queries and relevant to our analysis of energy security implications of PEVs.
+
+```{r TopicAnalysis, eval = T}
+screenedrefs <- read.csv("../Output/scopus_wos_scholar_unique_rev.csv") %>%
+  filter(Keep_prescreen == 1) %>%
+  group_by(Topic) %>%
+  summarise(count = n())
+
+```
+

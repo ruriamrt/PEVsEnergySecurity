@@ -1,0 +1,1464 @@
+---
+title: "PEV vs ICEV LDV fuel cost"
+author: "Rocio Uria-Martinez"
+date: "02/21/2024"
+output: html_document
+---
+
+```{r LoadLibraries, eval=T, echo=F, include=F}
+
+library(tidyverse)
+library(stringr)
+library(readxl)
+library(lubridate)
+library(knitr)
+library(scales) 
+library(extrafont)
+library(purrr)
+library(broom)
+library(EIAdata)
+library(httr)
+library(jsonlite)
+library(directlabels)
+library(egg)
+
+```
+
+Note: chunks label readAPIxxxxxx do not need to be run every time. Those are chunks that read EIA data using its API. I save those and then load them into a separate chunk to proceed with data analysis.
+For that reason, the eval option is turned to F in those chunks. They only need to be rerun when data updates are needed.
+
+
+```{r PlotFormatTheme, eval=T, echo=F, warning=F, message=F}
+
+EERE.palette.long <- c("#007934", "#5E6A71", "#E37222", "#FECB00", "#69BE28", "#1F82BB", "#005B82", "#C3C8C8", "#9865AA", "#9E2432", "#000000")
+EERE.palette.names <- c("DarkGreen", "DarkGrey", "DarkOrange", "EggYolk", "PistachioGreen", "AquaBlue", "DarkBlue", "LightGrey", "Purple", "DarkRed", "Black")
+############################################################################
+
+##custom plot theme
+myFGtheme <- theme_bw() +   
+  theme(text=element_text(size=12)) +
+  theme(axis.text = element_text(size=10), axis.title=element_text(size=10, face="bold")) +
+  #theme(text=element_text(family="Franklin Gothic Book", size=12)) +
+  #theme(axis.text = element_text(size=10), axis.title=element_text(size=10, face="bold", family = "Franklin Gothic Medium")) +
+  #theme(axis.text.x = element_text(angle = 65, vjust = .95,hjust=.95))+
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "grey", size = 0.5), panel.grid.minor.y = element_line(color = "white"),
+        panel.background = element_blank(),
+        strip.background = element_rect(color = "white"),
+        axis.line = element_line(colour = "grey", size = 0.5), panel.border = element_blank()) +
+  theme(legend.direction = "horizontal", legend.position = "bottom", legend.box = "vertical", legend.title.align = 0, legend.key=element_blank()) + 
+  theme(legend.text = element_text((size = 10))) +
+  #theme(legend.title=element_text(size = 12, family = "Franklin Gothic Medium", face = "bold"))
+  theme(legend.title=element_text(size = 12, face = "bold"))
+
+
+
+OutputPath = "C:/Projects/EPA/PEV_ES_review/Output" 
+
+today <- Sys.Date()
+
+
+#Statement to use to knit through console
+
+#rmarkdown::render("C:/Projects/EPA/PEV_ES_review/Analysis/affordability_analysis.Rmd", output_dir = OutputPath, output_file = paste0("affordability_analysis", today))
+```
+
+```{r APIkeystore, eval=F, echo=F, warning=F, message=F}
+
+#NOTE: EACH USER SHOULD USE ITS OWN KEY
+my_eia_API_key <- "0832E4028722FE12228D7571C850CF14"
+
+eia_api_v2_read <- function(api_codes){
+
+  api_call <- map(api_codes, httr::GET)
+  
+  api_call_content <- modify_depth(api_call, 1, "content") 
+  
+  api_char <- map(api_call_content, base::rawToChar)
+  
+  api_JSON <- map(api_char, jsonlite::fromJSON, flatten = TRUE)
+  
+  api_JSON_response <- modify_depth(api_JSON, 1, "response")
+  
+  api_JSON_data <- modify_depth(api_JSON_response, 1, "data")
+  
+  eia_data_df <- map(api_JSON_data, as.data.frame)
+  
+  eia_data_out <- reduce(eia_data_df, full_join) 
+    
+eia_data_out
+   
+#  api_JSON
+}
+
+
+```
+
+
+```{r fueleconomy_EPA_MY24, eval=T, echo=F, warning=F, message=F}
+#Data from https://www.fueleconomy.gov/feg/download.shtml
+
+FE_varselect <- c(
+  "Model Year", 
+  "Mfr Name", 
+  "Division", 
+  "Carline", 
+  "Index (Model Type Index)", 
+  "City FE (Guide) - Conventional Fuel", 
+  "Hwy FE (Guide) - Conventional Fuel", 
+  "Comb FE (Guide) - Conventional Fuel", 
+  "City Unrd Adj FE - Conventional Fuel", 
+  "Hwy Unrd Adj FE - Conventional Fuel", 
+  "Comb Unrd Adj FE - Conventional Fuel", 
+  "Guzzler?", 
+  "Range1 - Model Type Driving Range - Conventional Fuel", 
+  "Fuel Usage  - Conventional Fuel", 
+  "Fuel Usage Desc - Conventional Fuel", 
+  "Fuel Unit - Conventional Fuel", 
+  "Fuel Unit Desc - Conventional Fuel", 
+  "Annual Fuel1 Cost - Conventional Fuel", 
+  "EPA Calculated Annual Fuel Cost - Conventional Fuel -----  Annual fuel cost error. Please revise Verify.", 
+  "City2 FE (Guide) - Alternative Fuel", 
+  "Hwy2 Fuel FE (Guide) - Alternative Fuel", 
+  "Comb2 Fuel FE (Guide) - Alternative Fuel", 
+  "City2 Unrd Adj FE - Alternative Fuel", 
+  "Hwy2 Unrd Adj FE - Alternative Fuel", 
+  "Cmb2 Unrd Adj FE - Alternative Fuel", 
+  "Range2 - Alt Fuel Model Typ Driving Range - Alternative Fuel", 
+  "Fuel2 Usage - Alternative Fuel", 
+  "Fuel2 Usage Desc - Alternative Fuel", 
+  "Fuel2 Unit - Alternative Fuel",  
+  "Fuel2 Unit Desc - Alternative Fuel", 
+  "Fuel2 Annual Fuel Cost - Alternative Fuel", 
+  "Fuel2 EPA Calculated Annual Fuel Cost - Alternative Fuel", 
+  "Model Type Desc (MFR entered)", 
+  "Descriptor - Model Type (40 Char or less)", 
+  "Carline Class",
+  "Carline Class Desc")
+
+#"City Unadj FE - Conventional Fuel",  
+#"Hwy Unadj FE - Conventional Fuel", 
+#"Comb Unadj FE - Conventional Fuel",
+#"City2 Unadj FE - Alternative Fuel", 
+#"Hwy2 Unadj FE - Alternative Fuel", 
+#"Comb2 Unadj FE - Alternative Fuel", 
+
+EPA_fuelec_MY24_conv <- read_excel("../Data/2024 FE Guide for DOE-release dates before 11-13-2023-no-sales -10-31-2023 (with EVs and PHEVs)EQSPublic.xlsx", sheet = "24")
+
+EPA_fuelec_MY24_BEV <- read_excel("../Data/2024 FE Guide for DOE-release dates before 11-13-2023-no-sales -10-31-2023 (with EVs and PHEVs)EQSPublic.xlsx", sheet = "24 EVs", skip = 7)
+
+EPA_fuelec_MY24_PHEV <- read_excel("../Data/2024 FE Guide for DOE-release dates before 11-13-2023-no-sales -10-31-2023 (with EVs and PHEVs)EQSPublic.xlsx", sheet = "24 PHEV", skip = 6)
+
+EPA_FE_MY24_conv <- EPA_fuelec_MY24_conv %>%
+  select(any_of(FE_varselect)) %>%
+  mutate(category = "Conventional")
+
+#Typo correction on unit labels for one of the BEV models
+EPA_fuelec_MY24_BEV$`Fuel Unit Desc - Conventional Fuel`[EPA_fuelec_MY24_BEV$`Index (Model Type Index)` == 360 & EPA_fuelec_MY24_BEV$`City FE (Guide) - Conventional Fuel` == 112] <- "miles per gallon"
+EPA_fuelec_MY24_BEV$`Fuel Unit Desc - Conventional Fuel`[EPA_fuelec_MY24_BEV$`Index (Model Type Index)` == 360 & EPA_fuelec_MY24_BEV$`City FE (Guide) - Conventional Fuel` == 30] <- "kilowatt-hour per 100 miles"
+
+EPA_FE_MY24_BEV <- EPA_fuelec_MY24_BEV %>%
+  filter(!is.na(`Model Yr`)) %>%
+  filter(`Fuel Unit Desc - Conventional Fuel` == "miles per gallon") %>%
+  rename(`Model Year` = `Model Yr`) %>%
+  select(any_of(FE_varselect)) %>%
+  mutate(category = "BEV")
+
+EPA_FE_MY24_PHEV <- EPA_fuelec_MY24_PHEV %>%
+  filter(!is.na(`Model Yr  (gold fill means release date is after today's date)`)) %>%
+  mutate(`Mfr Name` = ifelse(grepl("Blended", `Mfr Name`) == T, NA, `Mfr Name`)) %>%
+  fill(2:9) %>%
+  filter(`Fuel2 Unit Desc - Alternative Fuel` == "miles per gallon") %>%
+  rename(`Model Year` = `Model Yr  (gold fill means release date is after today's date)`) %>%
+  select(any_of(FE_varselect)) %>%
+  mutate(category = "PHEV")
+
+#The following 7 categories are the ones used in https://www.energy.gov/eere/vehicles/articles/fotw-1251-august-15-2022-electric-vehicles-have-lowest-annual-fuel-cost-all 
+#The correspondence between those 7 categories and the categories in `Carline Class Desc` is my guess. It might need to be changed.
+#As a first step of the analysis, I want to replicate the plot in FOTW1251
+
+smallcar <- c("Compact Cars", "Minicompact Cars", "Two Seaters", "Subcompact Cars", "Small Station Wagons")
+midsizecar <- c("Midsize Cars", "Midsize Station Wagons")
+largecar <- c("Large Cars")
+smallsuv <- c("Small SUV 2WD", "Small SUV 4WD")
+standardsuv <- c("Standard SUV 2WD", "Standard SUV 4WD")
+pickup <- c("Small Pick-up Trucks 2WD", "Small Pick-up Trucks 4WD", "Standard Pick-up Trucks 2WD", "Standard Pick-up Trucks 4WD")
+van <- c("Special Purpose Vehicle, minivan 2WD", "Special Purpose Vehicle, minivan 4WD")
+
+
+pfuelmatch <- read.delim(textConnection("
+fuelcode : fuelprice : fuelunits : fuelpsource
+DU : 3.86 : usdpergal : EPA_MY24_fueleconomy_guide
+EL : 0.15 : usdperkWh : EPA_MY24_fueleconomy_guide
+G  : 3.06 : usdpergal : EPA_MY24_fueleconomy_guide
+GM : 3.60 : usdpergal : EPA_MY24_fueleconomy_guide
+GP : 3.95 : usdpergal : EPA_MY24_fueleconomy_guide
+GPR : 3.95 : usdpergal : EPA_MY24_fueleconomy_guide
+E   : 3.05 : usdpergal : EPA_MY24_fueleconomy_guide
+"),header=TRUE,sep=":",strip.white=TRUE)
+
+#Notes: The prices in pfuelmatch are the ones used by EPA for its MY24 fuel economy guide. DU = diesel; EL = electricity; G = regular gasoline; GM = medium gasoline ; GP = gasoline premium recommended; GPR = gasoline premium required; E = ethanol
+
+#This is the mileage per year assumed by EPA in its fuel economy guide calculations
+vmt_per_yr <- 15000
+
+kWhpergge <- 33.705 #https://www3.epa.gov/otaq/gvg/learn-more-technology.htm
+
+diesel_mmbtu <- 138700  #https://www.bts.gov/content/energy-consumption-mode-transportation#:~:text=Diesel%20motor%20fuel%20%3D%20138%2C700%20Btu%2Fgallon.
+gasoline_mmbtu <- 125000  #https://www.bts.gov/content/energy-consumption-mode-transportation#:~:text=Diesel%20motor%20fuel%20%3D%20138%2C700%20Btu%2Fgallon.
+e10_mmbtu <- 120214 #https://www.eia.gov/energyexplained/units-and-calculators/
+e85_mmbtu <- 83950 #https://afdc.energy.gov/files/u/publication/fuel_comparison_chart.pdf
+
+ethanol_mmbtu_penalty <- e85_mmbtu/e10_mmbtu #https://afdc.energy.gov/fuels/properties
+
+EPA_FE_MY24 <- rbind(EPA_FE_MY24_conv, EPA_FE_MY24_BEV, EPA_FE_MY24_PHEV) %>%
+  mutate(`EPA Calculated Annual Fuel Cost - Conventional Fuel -----  Annual fuel cost error. Please revise Verify.` = as.numeric(`EPA Calculated Annual Fuel Cost - Conventional Fuel -----  Annual fuel cost error. Please revise Verify.`),
+         `Fuel2 Annual Fuel Cost - Alternative Fuel` = as.numeric (`Fuel2 Annual Fuel Cost - Alternative Fuel`)) %>%
+  mutate(checkdiffs1 = `Annual Fuel1 Cost - Conventional Fuel` - `EPA Calculated Annual Fuel Cost - Conventional Fuel -----  Annual fuel cost error. Please revise Verify.`,
+         checkdiffs2 = `Fuel2 Annual Fuel Cost - Alternative Fuel` - `Fuel2 EPA Calculated Annual Fuel Cost - Alternative Fuel`) %>%
+  #I remove the "EPA calculated" columns because checkdiffs1 and checkdiffs2 are always zero
+  select(-`EPA Calculated Annual Fuel Cost - Conventional Fuel -----  Annual fuel cost error. Please revise Verify.`, -checkdiffs1, -checkdiffs2) %>%
+  filter(!(is.na(Division))) %>%
+  mutate(type = ifelse(`Carline Class Desc` %in% smallcar, "Small Car",
+                       ifelse(`Carline Class Desc` %in% midsizecar, "Midsize Car",
+                              ifelse(`Carline Class Desc` %in% largecar, "Large Car",
+                                     ifelse(`Carline Class Desc` %in% smallsuv, "Small SUV",
+                                            ifelse(`Carline Class Desc` %in% standardsuv, "Standard SUV",
+                                                   ifelse(`Carline Class Desc` %in% pickup, "Pickup",
+                                                          ifelse(`Carline Class Desc` %in% van, "Van", NA)))))))) %>%
+  filter(!is.na(type)) %>%
+  mutate(fueltype = ifelse(category == "Conventional" & `Fuel Usage  - Conventional Fuel` %in% c("G", "GM", "GP", "GPR"), "Gasoline",
+                           ifelse(category == "Conventional" & `Fuel Usage  - Conventional Fuel` == "DU", "Diesel",
+                                  ifelse(category == "BEV", "BEV",
+                                         ifelse(category == "PHEV", "PHEV", NA))))) %>%
+  mutate(hybrid = ifelse(`Model Type Desc (MFR entered)` == "HYBRID" | grepl("ybrid", `Descriptor - Model Type (40 Char or less)`) == T, 1, 0),
+         hybrid = ifelse(is.na(hybrid), 0, hybrid)) %>%
+  mutate(fueltype = ifelse(hybrid == 1, "Hybrid", fueltype)) %>%
+  mutate(type = as.factor(type),
+         fueltype = as.factor(fueltype))
+
+
+model_number_check <- EPA_FE_MY24 %>%
+  group_by(Division, Carline, `Index (Model Type Index)`) %>%
+  summarise(count = n())
+#Note: EPA_FE_MY24 dataframe has 954 rows with 952 unique combinations of division, carline and index model; for the two combinations of division, carline and index model that have two rows in the dataframe, the difference is given in a notes column (one is mild hybrid and the other is full hybrid for each of the two)
+
+EPA_FE_MY24$type <- factor(EPA_FE_MY24$type, levels = c("Van", "Pickup", "Standard SUV", "Small SUV", "Large Car", "Midsize Car", "Small Car"))
+
+EPA_FE_MY24$fueltype <- factor(EPA_FE_MY24$fueltype, levels = c("BEV", "PHEV", "Hybrid", "Gasoline", "Diesel"))
+
+#Replication of FOTW#1251 plot
+EPA_FE_MY24_plot <- ggplot(EPA_FE_MY24, aes(x = type, y = `Annual Fuel1 Cost - Conventional Fuel`, color = fueltype)) +
+  geom_point(position = "jitter") +
+  scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_y_continuous(labels = comma, breaks = pretty_breaks(n = 10)) +
+  coord_flip() +
+  labs(x = "", y = "USD/year", title = "Annual Fuel Cost for MY24 Light-Duty Vehicles", color = "Fuel Type") +
+  myFGtheme +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "grey", size = 0.5), panel.grid.minor.x = element_line(color = "white"),
+        panel.background = element_blank(),
+        strip.background = element_rect(color = "white"),
+        axis.line = element_line(colour = "grey", size = 0.5), panel.border = element_blank()) +
+  guides(color = guide_legend(title.position = "top", nrow = 1, reverse = F, byrow = T, override.aes = list(size = 3))) 
+EPA_FE_MY24_plot 
+
+ggsave("../Output/EPA_FE_MY24_plot.png", EPA_FE_MY24_plot, width = 6, height = 8, units = "in")
+
+```
+
+For BEVs, annual fuel cost ranges from `r min(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "BEV"])` to `r max(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "BEV"])`.
+For PHEVs, annual fuel cost ranges from `r min(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "PHEV"])` to `r max(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "PHEV"])`.
+For hybrids, annual fuel cost ranges from `r min(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "Hybrid"])` to `r max(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "Hybrid"])`.
+For diesel LDVs, annual fuel cost ranges from `r min(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "Diesel"])' to 'r max(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "Diesel"])`.
+For gasoline LDVs, annual fuel cost ranges from `r min(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "Gasoline"])' to 'r max(EPA_FE_MY24$`Annual Fuel1 Cost - Conventional Fuel`[EPA_FE_MY24$fueltype == "Gasoline"])`.
+
+
+```{r fuelcost_replicate, eval=T, echo=F, warning=F, message=F}
+#For vehicles compatible with two fuels (FFVs and PHEVs), I pick a single annual fuel cost value based on the following assumptions:
+#For FFVs, I select the minimum of the two reported costs (i.e., ethanol v gasoline)  
+#For PHEVs, I construct an annual fuel cost that combines both gasoline and electricity values based on the utility factor equation used by EPA in the LMDV rule
+
+#https://dis.epa.gov/otaqpub/display_file.jsp?docid=54591&flag=1#:~:text=The%20annual%20fuel%20cost%20estimates,to%20the%20nearest%20whole%20MPG).
+#The annual fuel cost estimates should be calculated based on 15,000 VMT, the listed fuel cost and the adjusted combined MPG (0.55/0.45 harmonic weighting of the adjusted city and highway MPG values, then rounded to the nearest whole MPG)
+
+EPA_FE_MY24_fuelcostcalcs <- EPA_FE_MY24 %>%
+  #rename columns to shorter names; suffix 1 refers to conventional/primary fuel, suffix 2 refers to alternative fuel
+  mutate(check_comb_mpg = ((1/((0.55/`City Unrd Adj FE - Conventional Fuel`) + (0.45/`Hwy Unrd Adj FE - Conventional Fuel`))))/`Comb Unrd Adj FE - Conventional Fuel`) %>%
+  rename(annualfuelcost_1 = `Annual Fuel1 Cost - Conventional Fuel`, 
+         annualfuelcost_2 = `Fuel2 Annual Fuel Cost - Alternative Fuel`,
+         range_2 = `Range2 - Alt Fuel Model Typ Driving Range - Alternative Fuel`,
+         fuelcode_1 = `Fuel Usage  - Conventional Fuel`,
+         fuelcode_2 = `Fuel2 Usage - Alternative Fuel`,
+         #combFE_1 = `Comb Unrd Adj FE - Conventional Fuel`,
+         #combFE_2 = `Cmb2 Unrd Adj FE - Alternative Fuel`,
+         combFE_1 = `Comb FE (Guide) - Conventional Fuel`,
+         combFE_2 = `Comb2 Fuel FE (Guide) - Alternative Fuel`
+         ) %>%
+  left_join(pfuelmatch, by = c("fuelcode_1" = "fuelcode")) %>%
+  rename(fuelprice_1 = fuelprice, fuelunits_1 = fuelunits) %>%
+  left_join(pfuelmatch, by = c("fuelcode_2" = "fuelcode")) %>%
+  rename(fuelprice_2 = fuelprice, fuelunits_2 = fuelunits) %>%
+  mutate(fuelprice_2 = ifelse(is.na(fuelprice_2), 0, fuelprice_2)) %>%
+  mutate(fuelprice_1 = ifelse(fuelcode_1 == "EL", 
+                               fuelprice_1 * kWhpergge, fuelprice_1)) %>%
+  #for PHEVs, electricity is fuel2
+  mutate(fuelprice_2 = ifelse(fuelcode_2 == "EL", 
+                               fuelprice_2 * kWhpergge, fuelprice_2)) %>%
+  #calculations to try to replicate the values created by EPA
+  mutate(my_annual_fuel_cost_1 = (1/(combFE_1)) * fuelprice_1 * vmt_per_yr,
+         check_cost_abs_1 = round(annualfuelcost_1 - my_annual_fuel_cost_1, 1),
+         check_cost_rel_1 = annualfuelcost_1/my_annual_fuel_cost_1,
+         implied_pfuel_1 = (annualfuelcost_1/vmt_per_yr)*combFE_1,
+         my_annual_fuel_cost_2 = (1/(combFE_2)) * fuelprice_2 * vmt_per_yr,
+         check_cost_abs_2 = round(annualfuelcost_2 - my_annual_fuel_cost_2, 1),
+         check_cost_rel_2 = annualfuelcost_2/my_annual_fuel_cost_2,
+         implied_pfuel_2 = (annualfuelcost_2/vmt_per_yr)*combFE_2)
+  
+#Note: check_cost_abs should fall in the (-50, 50) range. It only is within that range for BEVs if I use the prices listed in the 2024 Fuel Economy guide. On 02/26, I emailed the contact listed on the website to check if the fuel prices used for the calculations in the datafile differ from those in the guide. They did not confirm which prices are used but they confirmed the formula I'm using is correct.
+```
+
+
+Next, I collect historical 2023 prices for all the relevant fuels both for the US average and for a subset of states (defined by the list of states for which EIA publishes weekly gasoline prices). For E85 and ULSD, prices are only available by region so an additional step is needed to do a correspondence from regions to states.
+
+
+```{r E85_p, eval=T, echo=F, warning=F, message=F}
+#EIA does not publish historic E85 prices but Alternative Fuels Data Center publishes quarterly snapshots of E85 prices by region
+#https://afdc.energy.gov/fuels/prices.html
+E85_p <- read.delim(textConnection("
+fuel_code : fuelprice : units : fuelpsource : region : period
+E        : 2.77      : USD_per_gal : afdc.energy.gov : USavg            : January_2023
+E        : 4.17      : USD_per_gal  : afdc.energy.gov : New England      : January_2023
+E        : 3.02      : USD_per_gal  : afdc.energy.gov : Central Atlantic : January_2023
+E        : 2.95      : USD_per_gal: afdc.energy.gov : Lower Atlantic   : January_2023
+E        : 2.60      : USD_per_gal: afdc.energy.gov : Midwest          : January_2023
+E        : 2.55      : USD_per_gal: afdc.energy.gov : Gulf Coast       : January_2023
+E        : 3.13      : USD_per_gal: afdc.energy.gov : Rocky Mountain   : January_2023
+E        : 3.29      : USD_per_gal: afdc.energy.gov : West Coast       : January_2023
+E        : 2.98      : USD_per_gal: afdc.energy.gov : USavg            : April_2023
+E        : 4.11      : USD_per_gal: afdc.energy.gov : New England      : April_2023
+E        : 2.99      : USD_per_gal: afdc.energy.gov : Central Atlantic : April_2023
+E        : 3.11      : USD_per_gal: afdc.energy.gov : Lower Atlantic   : April_2023
+E        : 2.89      : USD_per_gal: afdc.energy.gov : Midwest          : April_2023
+E        : 2.84      : USD_per_gal: afdc.energy.gov : Gulf Coast       : April_2023
+E        : 3.12      : USD_per_gal : afdc.energy.gov : Rocky Mountain   : April_2023
+E        : 3.33      : USD_per_gal : afdc.energy.gov : West Coast       : April_2023
+E        : 2.95      : USD_per_gal : afdc.energy.gov : USavg            : July_2023
+E        : 4.27      : USD_per_gal : afdc.energy.gov : New England      : July_2023
+E        : 2.86      : USD_per_gal : afdc.energy.gov : Central Atlantic : July_2023
+E        : 2.87      : USD_per_gal: afdc.energy.gov : Lower Atlantic   : July_2023
+E        : 2.89      : USD_per_gal: afdc.energy.gov : Midwest          : July_2023
+E        : 2.79      : USD_per_gal: afdc.energy.gov : Gulf Coast       : July_2023
+E        : 3.39      : USD_per_gal: afdc.energy.gov : Rocky Mountain   : July_2023
+E        : 3.40      : USD_per_gal: afdc.energy.gov : West Coast       : July_2023
+E        : 3.05      : USD_per_gal: afdc.energy.gov : USavg            : October_2023
+E        : 4.17      : USD_per_gal: afdc.energy.gov : New England      : October_2023
+E        : 2.94      : USD_per_gal: afdc.energy.gov : Central Atlantic : October_2023
+E        : 2.96      : USD_per_gal: afdc.energy.gov : Lower Atlantic   : October_2023
+E        : 2.89      : USD_per_gal: afdc.energy.gov : Midwest          : October_2023
+E        : 2.81      : USD_per_gal: afdc.energy.gov : Gulf Coast       : October_2023
+E        : 3.41      : USD_per_gal: afdc.energy.gov : Rocky Mountain   : October_2023
+E        : 3.98      : USD_per_gal: afdc.energy.gov : West Coast       : October_2023
+"),header=TRUE,sep=":",strip.white=TRUE)
+
+E85_p_2023 <- E85_p %>%
+  group_by(fuel_code, region, units, fuelpsource) %>%
+  summarise(price = mean(fuelprice)) %>%
+  mutate(year = 2023) %>%
+  rename()
+
+states_select <- c("USavg", "Massachusetts", "New York", "Florida", "Ohio", "Minnesota",  "Texas", "Colorado", "California", "Washington")
+E85_regions <- c("USavg", "New England", "Central Atlantic", "Lower Atlantic", "Midwest", "Midwest","Gulf Coast", "Rocky Mountain", "West Coast", "West Coast")
+
+E85_region_match <- data.frame(states_select, E85_regions)
+colnames(E85_region_match) <- c("geo_unit", "region")
+
+E85_p_2023 <- E85_p_2023 %>%
+  full_join(E85_region_match, by = "region") %>%
+  ungroup() %>%
+  rename(price_source = fuelpsource) %>%
+  select(-region)
+
+```
+```{r readAPI_MWHretaildata, eval=F, echo=F, warning=F, message=F}
+
+#Note: This chunk does not need to be run every time or by every user. Data obtained from API are stored and version-controlled as input. API retrieval will be repeated periodically to update the data series.
+
+#Example url from documentation (https://www.eia.gov/opendata/documentation.php)
+#https://api.eia.gov/v2/electricity/retail-sales/data?api_key=xxxxxx&data[]=price&facets[sectorid][]=RES&facets[stateid][]=CO&frequency=monthly&start=2009-01-31
+
+#Note: no more than 5,000 rows will be returned in a single call. You should check the size of the dataset of interest and structure it accordingly to take into account that constraint. 
+
+#base_url <- "https://api.eia.gov/v2/electricity/retail-sales"
+
+#EIA_retail_sales_url <- paste0("https://api.eia.gov/v2/electricity/retail-sales&api_key=", my_eia_API_key, "&frequency=monthly&start=2009-01-31")
+
+
+Northwest = c('WA','OR','ID','MT','WY','AK')
+Southwest = c('NV','UT','CO','CA','HI','AZ','NM') 
+Midwest = c('IN','SD','IL','MI','OH','WI','IA','KS','MN','MO','NE','ND','KY') 
+Northeast = c('CT','ME','MA','NH','RI','VT','NJ','NY','DC','PA','WV','DE','MD') 
+Southeast = c('SC','OK','TX','FL','GA','NC','VA','AL','MS','TN','AR','LA')
+
+state_codes <- c(Northwest, Southwest, Midwest, Northeast, Southeast)
+
+EIA_retail_sales_url_part1 <- paste0("https://api.eia.gov/v2/electricity/retail-sales/data?api_key=", my_eia_API_key, "&data[]=price&data[]=sales&data[]=customers&facets[stateid][]=")
+EIA_retail_sales_url_part2 <- ("&frequency=monthly&start=2009-12-31")
+
+EIA_retail_sales_url <- crossing(EIA_retail_sales_url_part1, state_codes, EIA_retail_sales_url_part2) %>%
+  mutate(EIA_retail_sales_urls = paste0(EIA_retail_sales_url_part1, state_codes, EIA_retail_sales_url_part2)) %>%
+  pull(EIA_retail_sales_urls) %>%
+  as.list()
+
+
+eia_mwh_retail_df <- eia_api_v2_read(EIA_retail_sales_url)
+
+save(eia_mwh_retail_df, file = "../Data/eia_mwh_retail_df")
+```
+
+```{r mwh_retail_df, eval=T, echo=F, include=F, warning=F, message=F}
+
+# Monthly historical (2010-2022) U.S. electricity retail prices, residential sector (in dollars per MMBtu)
+
+#Source: EIA Form 861
+
+load("../Data/eia_mwh_retail_df")
+
+#summary(eia_mwh_retail_df)
+
+BTUsperkWh <- 3412.14
+
+#For comparison of fuel prices of EVs versus conventional ICE vehicles, the most relevant prices are those of the residential sector
+
+mwh_retail_residential_df <- eia_mwh_retail_df %>%
+  filter(sectorName == "residential") %>%
+  rename(price_centsperkWh = price, sales_millionkWh = sales, no_of_customer = customers) %>%  #encode units in column names
+  dplyr::select(-c(`price-units`, `sales-units`, `customers-units`)) %>%
+  mutate_at(c("price_centsperkWh", "sales_millionkWh", "no_of_customer"), as.numeric) %>%
+  mutate(price_USDperMMBtu = price_centsperkWh * 0.01 * (1/BTUsperkWh) * 1000000) %>%
+  mutate(Date = as.POSIXct(paste0(period, "-15")),
+         type = "state-level") %>%
+  rename(geo_unit = stateDescription)
+
+#USD/MMBtu = cents/kWh * USD/cent * kWh/Btu * Btu/MMBtu
+
+
+#Compute sales-weighted national average price
+
+US_mwh_retail_price <- mwh_retail_residential_df %>%
+  mutate(year = year(Date),
+         month = month(Date)) %>%
+  filter(year > 2009) %>%
+  group_by(Date, year, month, sectorName) %>%
+  mutate(national_sales = sum(sales_millionkWh),
+         share = sales_millionkWh/national_sales,
+         weighted_sales_centsperkwh = share * price_centsperkWh,
+         weighted_sales_USDperMMBtu = share * price_USDperMMBtu) %>%
+  summarise(price_centsperkWh = sum(weighted_sales_centsperkwh),
+            price_USDperMMBtu = sum(weighted_sales_USDperMMBtu)) %>%
+  mutate(geo_unit = "USavg",
+         type = "vol-weighted average",
+         product = "electricity") 
+
+geo_select <- c("California", "Colorado", "Florida", "Massachusetts", "Minnesota", "New York", "Ohio", "Texas", "Washington", "USavg")
+
+mwh_retail_residential_df_comb <- rbind(mwh_retail_residential_df[,c("Date", "sectorName", "geo_unit", "type", "price_centsperkWh")], as.data.frame(US_mwh_retail_price[,c("Date", "sectorName", "geo_unit", "type", "price_centsperkWh")])) %>%
+  filter(geo_unit %in% geo_select)
+
+#dataframe to use in fuel cost calculations
+mwh_retail_residential_df_comb_byyr <- mwh_retail_residential_df_comb %>%
+  mutate(year = substr(Date, 1, 4)) %>%
+  group_by(year, geo_unit) %>%
+  summarise(price = mean(price_centsperkWh)) %>%
+  mutate(fuel_code = "EL",
+         units = "cents_per_kWh",
+         price_source = "EIA") 
+
+MWH_retail_p_plot <- ggplot(mwh_retail_residential_df_comb, aes(x = Date, y = price_centsperkWh, group = geo_unit, color = geo_unit, size = geo_unit)) +
+  geom_line() +
+  geom_dl(aes(label = geo_unit),  method = list(dl.trans(x = x - 2.15), "last.bumpup")) +
+  scale_x_datetime(breaks = pretty_breaks(n = 12)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * max(mwh_retail_residential_df_comb$price_centsperkWh)), breaks = pretty_breaks(n = 8)) +
+  scale_size_manual(values = c(0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 1.2, 0.7)) +
+  labs(x = "", y = "cents perkWh", color = "", size = "") +
+  myFGtheme 
+MWH_retail_p_plot
+
+ggsave("../Output/MWH_retail_p_plot.png", MWH_retail_p_plot, width = 7, height = 5.5, units = "in")
+```
+
+
+```{r  petprices, eval=T, echo=F, warning=F, message=F}
+#Weekly retail gasoline and diesel prices
+
+MMBtugasoline <- 0.120286 #MMBtu per gallon of gasoline 
+MMBtudiesel <- 0.137831 #MMBtu per gallon of diesel
+
+#regular gasoline (https://www.eia.gov/dnav/pet/pet_pri_gnd_a_epmr_pte_dpgal_m.htm)
+us_rgaso_p <- read_excel("../Data/PET_PRI_GND_A_EPMR_PTE_DPGAL_M.xls", sheet = "Data 1", skip = 2) %>%
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtugasoline))
+
+states_rgaso_p <- read_excel("../Data/PET_PRI_GND_A_EPMR_PTE_DPGAL_M.xls", sheet = "Data 3", skip = 2) %>%   #subset of states
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtugasoline),
+         state = gsub(" Regular All Formulations Retail Gasoline Prices \\(Dollars per Gallon\\)", "", series)) %>%
+  as.data.frame
+
+#mid-grade gasoline (https://www.eia.gov/dnav/pet/pet_pri_gnd_a_epmm_pte_dpgal_m.htm)
+us_mgaso_p <- read_excel("../Data/PET_PRI_GND_A_EPMM_PTE_DPGAL_M.xls", sheet = "Data 1", skip = 2) %>%
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtugasoline))
+
+states_mgaso_p <- read_excel("../Data/PET_PRI_GND_A_EPMM_PTE_DPGAL_M.xls", sheet = "Data 3", skip = 2) %>%   #subset of states
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtugasoline),
+         state = gsub(" Midgrade All Formulations Retail Gasoline Prices \\(Dollars per Gallon\\)", "", series)) %>%
+  as.data.frame
+
+#premium gasoline (https://www.eia.gov/dnav/pet/pet_pri_gnd_a_epmp_pte_dpgal_m.htm)
+us_pgaso_p <- read_excel("../Data/PET_PRI_GND_A_EPMP_PTE_DPGAL_M.xls", sheet = "Data 1", skip = 2) %>%
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtugasoline))
+
+states_pgaso_p <- read_excel("../Data/PET_PRI_GND_A_EPMP_PTE_DPGAL_M.xls", sheet = "Data 3", skip = 2) %>%   #subset of states
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtugasoline),
+         state = gsub(" Premium All Formulations Retail Gasoline Prices \\(Dollars per Gallon\\)", "", series)) %>%
+  as.data.frame
+
+#ULSD (https://www.eia.gov/dnav/pet/pet_pri_gnd_a_EPD2DXL0_pte_dpgal_m.htm)
+us_ulsd_p <- read_excel("../Data/PET_PRI_GND_A_EPD2DXL0_PTE_DPGAL_M.xls", sheet = "Data 1", skip = 2) %>%
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtudiesel)) 
+
+#for ULSD, EIA only publishes state-level data for California; for the rest of states of interest, create a correspondence to the PADD averages
+california_ulsd_p <- read_excel("../Data/PET_PRI_GND_A_EPD2DXL0_PTE_DPGAL_M.xls", sheet = "Data 3", skip = 2)  %>%    #only California
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtudiesel),
+         region = gsub(" No 2 Diesel Ultra Low Sulfur \\(0-15 ppm\\) Retail Prices \\(Dollars per Gallon\\)", "", series)) %>%
+  as.data.frame
+
+regions_ulsd_p <- read_excel("../Data/PET_PRI_GND_A_EPD2DXL0_PTE_DPGAL_M.xls", sheet = "Data 2", skip = 2)  %>%    #PADDs
+  pivot_longer(cols = -c(1), names_to = "series", values_to = "value") %>%
+  mutate(value_mmbtu = value * (1/MMBtudiesel),
+         region = gsub(" No 2 Diesel Ultra Low Sulfur \\(0-15 ppm\\) Retail Prices \\(Dollars per Gallon\\)", "", series)) %>%
+  as.data.frame 
+
+states_frame <- rep(c("California", "Colorado", "Florida", "Massachusetts", "Minnesota", "New York", "Ohio", "Texas", "Washington")) %>% as.data.frame
+region_frame <- rep(c("California", "Rocky Mountain", "Lower Atlantic (PADD 1C)", "New England (PADD 1A)", "Midwest", "Central Atlantic (PADD 1B)", "Midwest", "Gulf Coast", "West Coast")) %>% as.data.frame
+
+state_region_match <- cbind(states_frame, region_frame)
+colnames(state_region_match) <- c("state", "region")
+
+states_ulsd_p <- rbind(california_ulsd_p, regions_ulsd_p) %>%
+  full_join(state_region_match, by = "region") %>%
+  filter(!is.na(state))
+
+
+us_pet_p <- rbind(us_rgaso_p, us_mgaso_p, us_pgaso_p, us_ulsd_p)  %>%
+  mutate(product = ifelse(grepl("Regular", series) == T, "regular gasoline",
+                          ifelse(grepl("Midgrade", series) == T, "midgrade gasoline",
+                                 ifelse(grepl("Premium", series) == T, "premium gasoline", 
+                                        ifelse(grepl("Diesel", series) == T, "ultra low sulfur diesel", NA))))) %>%
+  mutate(year = as.numeric(as.character(substr(Date, 1, 4)))) %>%
+  filter(year > 2009) %>%
+  mutate(type  = "USavg") %>%
+  dplyr::select(-series) %>%
+  rename(value_usdpergal = value) %>%
+  mutate(value_centperkWh = NA)
+
+states_pet_p <- rbind(states_rgaso_p, states_mgaso_p, states_pgaso_p, states_ulsd_p[,c("Date", "series", "value", "value_mmbtu", "state")]) %>%
+  mutate(product = ifelse(grepl("Regular", series) == T, "regular gasoline",
+                          ifelse(grepl("Midgrade", series) == T, "midgrade gasoline",
+                                 ifelse(grepl("Premium", series) == T, "premium gasoline", 
+                                        ifelse(grepl("Diesel", series) == T, "ultra low sulfur diesel", NA))))) %>%
+  mutate(year = as.numeric(as.character(substr(Date, 1, 4)))) %>%
+  filter(year > 2009) %>%
+  mutate(type  = "state-level") %>%
+  dplyr::select(-series) %>%
+  as.data.frame() %>%
+  rename(value_usdpergal = value) %>%
+  mutate(value_centperkWh = NA)
+
+us_pet_p_byyr <- us_pet_p %>%
+  group_by(product, type, year) %>%
+  summarise(value_usdpergal = mean(value_usdpergal),
+            value_centperkWh = NA) %>%
+  rename(state = type)
+
+states_pet_p_byyr <- states_pet_p %>%
+  group_by(product, type, state, year) %>%
+  summarise(value_usdpergal = mean(value_usdpergal),
+            value_centperkWh = NA)
+
+pet_p <- rbind(us_pet_p_byyr, states_pet_p_byyr) %>%
+  mutate(fuel_code = ifelse(product == "regular gasoline", "G",
+                            ifelse(product == "midgrade gasoline", "GM",
+                                   ifelse(product == "premium gasoline", "GPR",
+                                          ifelse(product == "ultra low sulfur diesel", "DU", NA)))),
+         price_source = "EIA",
+         units = "USD_per_gal") %>%
+  rename(geo_unit = state, price = value_usdpergal) %>%
+  ungroup() %>%
+  select(fuel_code, year, geo_unit, price, units, price_source)
+```
+
+
+```{r allprices, eval=T, echo=F, warning=F, message=F}
+mwh_p_2023 <- mwh_retail_residential_df_comb_byyr %>% filter(year == 2023) %>%
+  mutate(year = as.numeric(year),
+         price = price/100,
+         units = "USD_per_kWh")
+
+#Need to create one more block of prices for the fuel_code "GP" (i.e., gasoline price recommended)
+pet_p_gp <- pet_p %>%
+  filter(fuel_code == "GPR") %>%
+  mutate(fuel_code = "GP")
+
+pet_p_2023 <- pet_p %>% rbind(pet_p_gp) %>% filter(year == 2023) %>%
+  mutate(year = as.numeric(year))
+
+allfuelp_2023 <- rbind(mwh_p_2023, pet_p_2023, E85_p_2023)
+```
+
+
+```{r fuelcost_mycases, eval=T, echo=F, warning=F, message=F}
+
+#Utility factor equation inputs based on Regulatory Analysis Impact document from EPA LMDV rule
+ND <- 583 #normalized distance
+weight_coeff_1 <- 10.52
+weight_coeff_2 <- -7.282
+weight_coeff_3 <- -26.37
+weight_coeff_4 <- 79.08
+weight_coeff_5 <- -77.36
+weight_coeff_6 <- 26.07
+
+#From Borlaug (2020): For PHEVs with a ~50 miles all-electric range (historically popular in the United States), most driving occurs using electricity (utility factor of 76%). Shorter range PHEVs such as the Toyota Prius Prime with 25 miles of all-electric range have a utility factor of 53%. The utility factors come from a 2018 EPA report. I used these values from Borlaug in a first phase but switched to the lower UFs that result from using the updated fleet utilization factor curve in EPA's LMDV rule RIA document.
+
+cd_range <- as.data.frame(seq(0, 180), by = 5)
+colnames(cd_range) <- c("range_miles")
+
+cd_range <- cd_range %>%
+  mutate(UF =  1 - (exp(-1 *( (((range_miles/ND) ^ 1) * weight_coeff_1) + (((range_miles/ND) ^ 2) * weight_coeff_2) + (((range_miles/ND) ^ 3) * weight_coeff_3) + (((range_miles/ND) ^ 4) * weight_coeff_4) +  (((range_miles/ND) ^ 5) * weight_coeff_5) + (((range_miles/ND) ^ 6) * weight_coeff_6)))))
+
+uf_curve_plot <- ggplot(cd_range, aes(x = range_miles, y = UF)) +
+  geom_line() +
+  labs(x = "charge-depleting range (miles)", y = "utility factor") +
+  scale_x_continuous(expand = c(0,0), limits = c(0,180), breaks = seq(0,180,20)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,1), breaks = seq(0,1,0.1)) +
+  theme_bw()
+uf_curve_plot
+
+
+#Baseline charging shares as reported in Borlaug et al. (2020) from an EPRI report
+BEV_home_chrg_share <- 0.81
+BEV_lvl2_chrg_share <- 0.14
+BEV_lvl3_chrg_share <- 0.05
+
+PHEV_home_chrg_share <- 0.81
+PHEV_lvl2_chrg_share <- 0.19
+PHEV_lvl3_chrg_share <- 0.00
+
+#Alternative charging shares (worst case scenario)
+BEV_home_chrg_share_alt <- 0.0
+BEV_lvl2_chrg_share_alt <- 0.5
+BEV_lvl3_chrg_share_alt <- 0.5
+
+PHEV_home_chrg_share_alt <- 0.0
+PHEV_lvl2_chrg_share_alt <- 1.00
+PHEV_lvl3_chrg_share_alt <- 0.00
+
+#public charging prices from Trinko et al. (2021)
+residential_price <- pfuelmatch$fuelprice[pfuelmatch$fuelcode == "EL"]  #not clear if this the cost of level 1 or level 2 residential charging
+public_lvl2_price <- 0.28
+public_lvl3_price <- 0.32
+
+
+#For vehicles compatible with two fuels (FFVs and PHEVs), I pick a single annual fuel cost value based on the following assumptions:
+#For FFVs, I select the minimum of the two reported costs (i.e., ethanol v gasoline)  
+#For PHEVs, I construct an annual fuel cost that combines both gasoline and electricity values based on the utility factor (i.e., electricity share) reported in Borlaug (2020)
+
+#https://dis.epa.gov/otaqpub/display_file.jsp?docid=54591&flag=1#:~:text=The%20annual%20fuel%20cost%20estimates,to%20the%20nearest%20whole%20MPG).
+#The annual fuel cost estimates should be calculated based on 15,000 VMT, the listed fuel cost and the adjusted combined MPG (0.55/0.45 harmonic weighting of the adjusted city and highway MPG values, then rounded to the nearest whole MPG)
+
+EPA_FE_MY24_fuelcostvars <- EPA_FE_MY24 %>%
+  #rename columns to shorter names; suffix 1 refers to conventional/primary fuel, suffix 2 refers to alternative fuel
+  dplyr::rename(annualfuelcost_1 = `Annual Fuel1 Cost - Conventional Fuel`, 
+         annualfuelcost_2 = `Fuel2 Annual Fuel Cost - Alternative Fuel`,
+         range_2 = `Range2 - Alt Fuel Model Typ Driving Range - Alternative Fuel`,
+         fuelcode_1 = `Fuel Usage  - Conventional Fuel`,
+         fuelcode_2 = `Fuel2 Usage - Alternative Fuel`,
+         combFE_1 = `Comb Unrd Adj FE - Conventional Fuel`,
+         combFE_2 = `Cmb2 Unrd Adj FE - Alternative Fuel`,
+         ) %>%
+  left_join(allfuelp_2023[c("fuel_code", "price", "units", "geo_unit")], by = c("fuelcode_1" = "fuel_code")) %>%
+  rename(fuelprice_1 = price, fuelunits_1 = units) %>%
+  left_join(allfuelp_2023[c("fuel_code", "price", "units", "geo_unit")], by = c("fuelcode_2" = "fuel_code", "geo_unit")) %>%
+  rename(fuelprice_2 = price, fuelunits_2 = units) %>%
+  mutate(fuelprice_2 = ifelse(is.na(fuelprice_2), 0, fuelprice_2)) %>%
+  #for vehicles compatible with two fuels, set the use shares of the two fuels
+  mutate(fuelcode_2 = ifelse(is.na(fuelcode_2), "NO", fuelcode_2),
+         range_2 = as.numeric(range_2),
+         UF = ifelse(fuelcode_2 == "EL", 1 - (exp(-1 *( (((range_2/ND) ^ 1) * weight_coeff_1) + (((range_2/ND) ^ 2) * weight_coeff_2) + (((range_2/ND) ^ 3) * weight_coeff_3) + (((range_2/ND) ^ 4) * weight_coeff_4) +  (((range_2/ND) ^ 5) * weight_coeff_5) + (((range_2/ND) ^ 6) * weight_coeff_6)))), NA)) %>%
+  mutate(fuel1_share = ifelse(fuelcode_2 == "NO", 1,
+                              ifelse(fuelcode_2 == "E" & fuelprice_2 >= ethanol_mmbtu_penalty * fuelprice_1, 1,
+                                     ifelse(fuelcode_2 == "E" & fuelprice_2 < ethanol_mmbtu_penalty * fuelprice_1, 0,
+                                            ifelse(fuelcode_2 == "EL", 1 - UF, NA)))),
+         fuel2_share = 1 - fuel1_share) %>%
+   #for BEVs and electric share of PHEVs, create additional fuel price columns that correspond to different shares of charging at home vs public level 2 and level 3 chargers
+   #for BEVs, electricity is fuel1
+   mutate(fuelprice_1 = ifelse(fuelcode_1 == "EL", 
+                               fuelprice_1 * kWhpergge, fuelprice_1)) %>%
+   mutate(fuelprice_1_basechrgshares = ifelse(fuelcode_1 == "EL", 
+                                              BEV_home_chrg_share * fuelprice_1 + BEV_lvl2_chrg_share * public_lvl2_price * kWhpergge + BEV_lvl3_chrg_share * public_lvl3_price * kWhpergge, fuelprice_1)) %>%
+   mutate(fuelprice_1_altchrgshares = ifelse(fuelcode_1 == "EL", 
+                                             BEV_home_chrg_share_alt * fuelprice_1 + BEV_lvl2_chrg_share_alt * public_lvl2_price * kWhpergge + BEV_lvl3_chrg_share_alt * public_lvl3_price * kWhpergge, fuelprice_1)) %>%
+   #for PHEVs, electricity is fuel2
+   mutate(fuelprice_2 = ifelse(fuelcode_2 == "EL", 
+                               fuelprice_2 * kWhpergge, fuelprice_2)) %>%
+   mutate(fuelprice_2_basechrgshares = ifelse(fuelcode_2 == "EL", 
+                                              PHEV_home_chrg_share * fuelprice_1 + PHEV_lvl2_chrg_share * public_lvl2_price * kWhpergge + PHEV_lvl3_chrg_share * public_lvl3_price * kWhpergge, fuelprice_2)) %>%
+   mutate(fuelprice_2_altchrgshares = ifelse(fuelcode_2 == "EL", 
+                                             PHEV_home_chrg_share_alt * fuelprice_1 + PHEV_lvl2_chrg_share_alt * public_lvl2_price * kWhpergge + PHEV_lvl3_chrg_share_alt * public_lvl3_price * kWhpergge, fuelprice_2)) %>%
+   #calculate annual fuel cost for the different combinations of fuel shares and electric charging location shares
+   mutate(combFE_fuel12 = (1/((fuel1_share/combFE_1) + (fuel2_share/combFE_2)))) %>%
+   mutate(annual_fuel_cost = ifelse(fuel2_share > 0, fuel1_share * (1/(combFE_1)) * fuelprice_1 * vmt_per_yr + fuel2_share * (1/(combFE_2)) * fuelprice_2 * vmt_per_yr,
+                                       ifelse(fuel2_share == 0, fuel1_share * (1/(combFE_1)) * fuelprice_1 * vmt_per_yr, NA)),
+          annual_fuel_cost_basechrgshares = ifelse(fuel2_share > 0, fuel1_share * (1/(combFE_1)) * fuelprice_1_basechrgshares * vmt_per_yr + fuel2_share * (1/(combFE_2)) * fuelprice_2_basechrgshares * vmt_per_yr,
+                                                     ifelse(fuel2_share == 0, fuel1_share * (1/(combFE_1)) * fuelprice_1_basechrgshares * vmt_per_yr, NA)),
+          annual_fuel_cost_altchrgshares = ifelse(fuel2_share > 0, fuel1_share * (1/(combFE_1)) * fuelprice_1_altchrgshares * vmt_per_yr + fuel2_share * (1/(combFE_2)) * fuelprice_2_altchrgshares * vmt_per_yr,
+                                                     ifelse(fuel2_share == 0, fuel1_share * (1/(combFE_1)) * fuelprice_1_altchrgshares * vmt_per_yr, NA)))
+
+```
+
+```{r fotw_plot, eval = T}
+
+EPA_FE_MY24_fuelcostvars_dotplotdata <- EPA_FE_MY24_fuelcostvars %>%
+  filter(geo_unit == "USavg") %>%
+  select(`Model Year`, `Mfr Name`, Division, Carline, `Index (Model Type Index)`, type, fueltype, UF, range_2, fuelcode_1, fuelcode_2, combFE_1, combFE_2, fuel1_share, fuel2_share, fuelprice_1, fuelprice_2, annual_fuel_cost, annual_fuel_cost_basechrgshares, annual_fuel_cost_altchrgshares)
+
+#Replication of FOTW#1251 plot (with 100% at home electricity charging)
+EPA_FE_MY24_myprices_plot_100rsdchrg <- ggplot(EPA_FE_MY24_fuelcostvars_dotplotdata, aes(x = type, y = annual_fuel_cost, color = fueltype)) +
+  geom_point(position = "jitter") +
+  scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.05*max(EPA_FE_MY24_fuelcostvars_dotplotdata$annual_fuel_cost)), labels = comma, breaks = pretty_breaks(n = 10)) +
+  coord_flip() +
+  labs(x = "", y = "USD/year", title = "Annual Fuel Cost for MY24 Light-Duty Vehicles \n(100% at-home electricity charging)", color = "Fuel Type") +
+  myFGtheme +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "grey", size = 0.5), panel.grid.minor.x = element_line(color = "white"),
+        panel.background = element_blank(),
+        strip.background = element_rect(color = "white"),
+        axis.line = element_line(colour = "grey", size = 0.5), panel.border = element_blank()) +
+  guides(color = guide_legend(title.position = "top", nrow = 1, reverse = F, byrow = T, override.aes = list(size = 3))) 
+EPA_FE_MY24_myprices_plot_100rsdchrg 
+
+ggsave("../Output/EPA_FE_MY24_myprices_plot_100rsdchrg.png", EPA_FE_MY24_myprices_plot_100rsdchrg, width = 6.25, height = 6.5, units = "in")
+
+#Replication of FOTW#1251 plot (with 100% public charging)
+EPA_FE_MY24_myprices_plot_100pblchrg <- ggplot(EPA_FE_MY24_fuelcostvars_dotplotdata, aes(x = type, y = annual_fuel_cost_altchrgshares, color = fueltype)) +
+  geom_point(position = "jitter") +
+  scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.05*max(EPA_FE_MY24_fuelcostvars_dotplotdata$annual_fuel_cost_altchrgshares)), labels = comma, breaks = pretty_breaks(n = 8)) +
+  coord_flip() +
+  labs(x = "", y = "USD/year", title = "Annual Fuel Cost for MY24 Light-Duty Vehicles \n(100% public charging)", color = "Fuel Type") +
+  myFGtheme +
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "grey", size = 0.5), panel.grid.minor.x = element_line(color = "white"),
+        panel.background = element_blank(),
+        strip.background = element_rect(color = "white"),
+        axis.line = element_line(colour = "grey", size = 0.5), panel.border = element_blank()) +
+  guides(color = guide_legend(title.position = "top", nrow = 1, reverse = F, byrow = T, override.aes = list(size = 3))) 
+EPA_FE_MY24_myprices_plot_100pblchrg 
+
+ggsave("../Output/EPA_FE_MY24_myprices_plot_100pblchrg.png", EPA_FE_MY24_myprices_plot_100pblchrg, width = 6, height = 7, units = "in")
+```
+
+
+
+```{r fuelcost_var_plots, eval=T, echo=F, warning=F, message=F}
+alltypes <- unique(levels(EPA_FE_MY24_fuelcostcalcs$type))
+allfuels <- unique(levels(EPA_FE_MY24_fuelcostcalcs$fueltype))
+
+all_types_fuels_df <- as.data.frame(crossing(alltypes, allfuels))
+
+EPA_FE_MY24_byvtypefuel <- EPA_FE_MY24_fuelcostvars %>%
+  group_by(type, fueltype, geo_unit) %>%
+  summarise(count = n(),
+            mean_combmpg = count/sum(1/combFE_1), #harmonic mean
+            median_combmpg = median(combFE_1),
+            p10_combmpg = quantile(combFE_1, 0.1),
+            p90_combmpg = quantile(combFE_1, 0.9),
+            median_fuelcost = median(annual_fuel_cost),
+            p10_fuelcost = quantile(annual_fuel_cost, 0.1),
+            p90_fuelcost = quantile(annual_fuel_cost, 0.9),
+            median_fuelcost_basechrgshares = median(annual_fuel_cost_basechrgshares),
+            p10_fuelcost_basechrgshares = quantile(annual_fuel_cost_basechrgshares, 0.1),
+            p90_fuelcost_basechrgshares = quantile(annual_fuel_cost_basechrgshares, 0.9),
+            median_fuelcost_altchrgshares = median(annual_fuel_cost_altchrgshares),
+            p10_fuelcost_altchrgshares = quantile(annual_fuel_cost_altchrgshares, 0.1),
+            p90_fuelcost_altchrgshares = quantile(annual_fuel_cost_altchrgshares, 0.9)
+            ) %>%
+  right_join(all_types_fuels_df, by = c("type" = "alltypes", "fueltype" =  "allfuels"))
+
+
+EPA_FE_MY24_gasoline <- EPA_FE_MY24_byvtypefuel %>%
+  filter(fueltype == "Gasoline") %>%
+  ungroup() %>%
+  select(type, geo_unit, median_fuelcost, p10_fuelcost, p90_fuelcost) %>%
+  rename(median_fuelcost_gasoline = median_fuelcost, p10_fuelcost_gasoline = p10_fuelcost, p90_fuelcost_gasoline = p90_fuelcost) 
+
+EPA_FE_MY24_byvtypefuel <- EPA_FE_MY24_byvtypefuel %>%
+  left_join(EPA_FE_MY24_gasoline, by = c("type", "geo_unit")) %>%
+  mutate(median_savings = median_fuelcost - median_fuelcost_gasoline,
+         savings_9010 = p90_fuelcost - p10_fuelcost_gasoline)
+
+EPA_FE_MY24_byvtypefuel$type <- factor(EPA_FE_MY24_byvtypefuel$type, levels = c("Small Car", "Midsize Car", "Large Car", "Small SUV", "Standard SUV",  "Pickup", "Van"))
+
+EPA_FE_MY24_byvtypefuel$fueltype <- factor(EPA_FE_MY24_byvtypefuel$fueltype, levels = c("BEV", "PHEV", "Hybrid", "Gasoline", "Diesel"))
+
+EPA_FE_MY24_byvtypefuel_plot <- ggplot(subset(EPA_FE_MY24_byvtypefuel, type != "Van" & geo_unit %in% c("Washington", "California", "Texas", "Massachusetts")), aes(x = type, y = median_fuelcost, color = fueltype, fill = fueltype)) +
+  #geom_point(size = 0.7, position = position_dodge()) +
+  geom_errorbar(aes(ymin = p10_fuelcost, ymax = p90_fuelcost), width = 0.4, position=position_dodge(.9)) +
+  geom_bar(stat = "identity", position = position_dodge(), alpha = 0.2) +
+  facet_wrap(~geo_unit, nrow = 2) +
+  scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_fill_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * max(EPA_FE_MY24_byvtypefuel$p90_fuelcost)), labels = comma, breaks = pretty_breaks(n = 10)) +
+  labs(x = "", y = "USD/year", title = "", fill = "Fuel Type") +
+  myFGtheme +
+  theme(axis.text.x = element_text(angle = 65, vjust = .95, hjust = .95)) +
+  guides(color = "none") +
+  guides(fill = guide_legend(nrow=1, title.position = "top", byrow=TRUE, reverse = F))
+EPA_FE_MY24_byvtypefuel_plot 
+
+ggsave("../Output/EPA_FE_MY24_byvtypefuel_plot.png", EPA_FE_MY24_byvtypefuel_plot, width = 6, height = 7.5, units = "in")
+
+
+# EPA_FE_MY24_byvtypefuel_basechrg_plot <- ggplot(subset(EPA_FE_MY24_byvtypefuel, type != "Van" & geo_unit %in% c("Washington", "California", "Texas", "Massachusetts")), aes(x = type, y = median_fuelcost_basechrgshares, color = fueltype, fill = fueltype)) +
+#   #geom_point(size = 0.7, position = position_dodge()) +
+#   geom_errorbar(aes(ymin = p10_fuelcost_basechrgshares, ymax = p90_fuelcost_basechrgshares), width = 0.4, position=position_dodge(.9)) +
+#   geom_bar(stat = "identity", position = position_dodge(), alpha = 0.2) +
+#   facet_wrap(~geo_unit, nrow = 2) +
+#   scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+#   scale_fill_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+#   scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * max(EPA_FE_MY24_byvtypefuel$p90_fuelcost_basechrgshares)), labels = comma, breaks = pretty_breaks(n = 10)) +
+#   labs(x = "", y = "USD/year", title = "Annual Fuel Cost for MY24 Light-Duty Vehicles \n(81% at-home charging for BEVs and electric share of PHEVs)", color = "Fuel Type") +
+#   myFGtheme +
+#   theme(axis.text.x = element_text(angle = 65, vjust = .95, hjust = .95)) +
+#   guides(color = "none") +
+#   guides(fill = guide_legend(nrow=1, title.position = "top", byrow=TRUE, reverse = F))
+# EPA_FE_MY24_byvtypefuel_basechrg_plot 
+# 
+# ggsave("../Output/EPA_FE_MY24_byvtypefuel_basechrg_plot.png", EPA_FE_MY24_byvtypefuel_basechrg_plot, width = 6, height = 8, units = "in")
+# 
+# EPA_FE_MY24_byvtypefuel_altchrg_plot <- ggplot(subset(EPA_FE_MY24_byvtypefuel, type != "Van" & geo_unit %in% c("Washington", "California", "Texas", "Massachusetts")), aes(x = type, y = median_fuelcost_altchrgshares, color = fueltype, fill = fueltype)) +
+#   #geom_point(size = 0.7, position = position_dodge()) +
+#   geom_errorbar(aes(ymin = p10_fuelcost_altchrgshares, ymax = p90_fuelcost_altchrgshares), width = 0.4, position=position_dodge(.9)) +
+#   geom_bar(stat = "identity", position = position_dodge(), alpha = 0.2) +
+#   facet_wrap(~geo_unit, nrow = 2) +
+#   scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+#   scale_fill_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+#   scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * max(EPA_FE_MY24_byvtypefuel$p90_fuelcost_altchrgshares)), labels = comma, breaks = pretty_breaks(n = 10)) +
+#   labs(x = "", y = "USD/year", title = "Annual Fuel Cost for MY24 Light-Duty Vehicles \n(0% at-home charging for BEVs and electric share of PHEVs)", color = "Fuel Type") +
+#   myFGtheme +
+#   theme(axis.text.x = element_text(angle = 65, vjust = .95, hjust = .95)) +
+#   guides(color = "none") +
+#   guides(fill = guide_legend(nrow=1, title.position = "top", byrow=TRUE, reverse = F))
+# EPA_FE_MY24_byvtypefuel_altchrg_plot 
+# 
+# ggsave("../Output/EPA_FE_MY24_byvtypefuel_altchrg_plot.png", EPA_FE_MY24_byvtypefuel_altchrg_plot, width = 6, height = 8, units = "in")
+
+EPA_FE_MY24_byvtypefuel_long <- EPA_FE_MY24_byvtypefuel %>%
+  pivot_longer(cols = c(median_fuelcost, p10_fuelcost, p90_fuelcost, median_fuelcost_basechrgshares, p10_fuelcost_basechrgshares, p90_fuelcost_basechrgshares, median_fuelcost_altchrgshares, p10_fuelcost_altchrgshares, p90_fuelcost_altchrgshares), names_to = "metric", values_to = "ann_fuel_cost") %>%
+  mutate(metric = gsub("_fuelcost", "", metric)) %>%
+  separate(metric, into = c("metric", "charging_shares"), sep = "_") %>%
+  mutate(charging_shares = as.factor(ifelse(is.na(charging_shares), "all_residential", charging_shares))) %>%
+  pivot_wider(id_cols = c(type, fueltype, geo_unit, count, mean_combmpg, median_combmpg, p10_combmpg, p90_combmpg, charging_shares), names_from = "metric", values_from = "ann_fuel_cost") %>%
+  filter(geo_unit == "USavg") %>%
+  mutate(charging_shares_2 = ifelse(charging_shares == "all_residential", "100% residential \ncharging",
+                                    ifelse(charging_shares == "basechrgshares", "baseline \ncharging shares",
+                                           ifelse(charging_shares == "altchrgshares", "100% public \ncharging", NA))))
+
+EPA_FE_MY24_byvtypefuel_long$charging_shares_2 <- factor(EPA_FE_MY24_byvtypefuel_long$charging_shares_2, levels = c("100% residential \ncharging", "baseline \ncharging shares", "100% public \ncharging")) 
+
+
+EPA_FE_MY24_byvtypefuel_chrgshares_plot <- ggplot(subset(EPA_FE_MY24_byvtypefuel_long, type != "Van"), aes(x = type, y = median, color = fueltype, fill = fueltype)) +
+  geom_errorbar(aes(ymin = p10, ymax = p90), width = 0.4, position=position_dodge(.9)) +
+  geom_bar(stat = "identity", position = position_dodge(), alpha = 0.2) +
+  facet_wrap(~charging_shares_2, nrow = 1) +
+  scale_color_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_fill_manual(values = EERE.palette.long[c(1,5,8,2,11)]) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * max(EPA_FE_MY24_byvtypefuel_long$p90)), labels = comma, breaks = pretty_breaks(n = 10)) +
+  labs(x = "", y = "USD/year", title = "", fill = "Fuel Type") +
+  myFGtheme +
+  theme(axis.text.x = element_text(angle = 65, vjust = .95, hjust = .95)) +
+  guides(color = "none") +
+  guides(fill = guide_legend(nrow=1, title.position = "top", byrow=TRUE, reverse = F))
+EPA_FE_MY24_byvtypefuel_chrgshares_plot 
+
+ggsave("../Output/EPA_FE_MY24_byvtypefuel_chrgshares_plot.png", EPA_FE_MY24_byvtypefuel_chrgshares_plot, width = 6, height = 5.5, units = "in")
+
+```
+
+Note:
+-Given the great variability in residential prices in 2023 (from 11 c/kWh in Washington to 29 c/kWh in California and Massachusetts), it does not seem right to just use the national averages from Trinko et al. (2021) for level 2 and level 3 public charging for individual states. Commercial electricity rates (also variable across states) should be reflected in the cost of charging at public locations.
+
+
+
+fueleff_EPA - reads and explores time series data on fuel economy of new ICEVs vs. BEVs from MY11 to MY21 (transmitted by Aaron Hula at EPA via Michael Shelby by email on 20220712 )
+
+```{r fueleff_EPA, eval=T, echo=F, warning=F, message=F}
+
+#On-road fuel economy of new vehicles by model year (transmitted by Aaron Hula at EPA via Michael Shelby by email on 20220712 )
+
+epafueleff <- read_excel("../Data/Trends EVs vs gasoline.xlsx", col_names = T) %>%
+  dplyr::select(MODEL_YEAR...1, AdjComp...3, AdjComp...7) %>%
+  rename(modelyear = MODEL_YEAR...1, electricity = AdjComp...3, gasoline = AdjComp...7) %>%
+  pivot_longer(cols = c(electricity, gasoline), names_to = "product_short", values_to = "mileage") %>%
+  mutate(mileage_unit = "miles per gge")
+
+#Add rows for 2022 and 2023 assuming fuel efficiency stayed constant relative to 2021 for both EVs and ICEVs.
+
+epafueleff_2022_assumption <- epafueleff %>%
+  filter(modelyear == 2021) %>%
+  mutate(modelyear = 2022)
+
+epafueleff_2023_assumption <- epafueleff %>%
+  filter(modelyear == 2021) %>%
+  mutate(modelyear = 2023)
+
+epafueleff <- rbind(epafueleff, epafueleff_2022_assumption, epafueleff_2023_assumption) %>%
+  rename(product = product_short) %>%
+  mutate(product = ifelse(product == "gasoline", "regular gasoline", product))
+
+epafueleff_delta <- epafueleff %>%
+  pivot_wider(id_cols = c("modelyear", "mileage_unit"), names_from = "product", values_from = "mileage") %>%
+  mutate(delta_rel = electricity/`regular gasoline`,
+         delta_abs = electricity - `regular gasoline`)
+```
+
+CPI - download CPI data from BLS
+
+```{r CPI, eval=T, echo=F, include=F, warning=F, message=F}
+#Source: https://beta.bls.gov/dataQuery/search
+#Enter series ID CUUR0000SA0 "All items in U.S. city average, all urban consumers, not seasonally adjusted"
+#Note: This is the CPI series that EIA uses to report real gasoline and electricity prices in its Monthly Energy Review
+
+CPI <- read.csv("../Data/CUUR0000SA0.csv") %>%
+  mutate(month = substr(Period, 2,3),
+         month = as.numeric(str_remove(month, "^0*"))) %>%
+  rename(year = Year, cpi = Value)
+
+#Choose base period
+cpi_dec2021 <- CPI$cpi[CPI$year == "2021" & CPI$month == "12"]
+cpi_dec2022 <- CPI$cpi[CPI$year == "2022" & CPI$month == "12"]
+cpi_dec2023 <- CPI$cpi[CPI$year == "2023" & CPI$month == "12"]
+
+CPI <- CPI %>%
+  mutate(base_period_cpi = cpi_dec2023,
+         cpi_adjfct = cpi/cpi_dec2023)  %>%
+  dplyr::select(year, month, cpi_adjfct)
+```
+
+```{r mwhvpet_p_US, eval=T, echo=F, warning=F, message=F}
+
+#prices per mile
+
+kWhpergge <- 33.705 #https://www3.epa.gov/otaq/gvg/learn-more-technology.htm
+
+kWhperMJ <- 0.278 #https://www.eia.gov/energyexplained/units-and-calculators/energy-conversion-calculators.php
+
+MJpergalgaso <- 126.858 #https://www.eia.gov/energyexplained/units-and-calculators/energy-conversion-calculators.php
+
+MJpergaldsl <- 144.945 #https://www.eia.gov/energyexplained/units-and-calculators/energy-conversion-calculators.php
+
+US_mwh_vs_pet_p <- US_mwh_retail_price %>%
+  rename(value_centperkWh = price_centsperkWh, value_mmbtu = price_USDperMMBtu) %>%
+  mutate(value_usdpergal = NA) %>%
+  rbind(us_pet_p[,c("Date", "product", "type", "value_mmbtu", "value_usdpergal", "value_centperkWh")]) %>%
+  mutate(year = as.numeric(substr(as.character(Date), 1, 4)),
+         month = as.numeric(substr(as.character(Date), 6, 7))) %>%
+  filter(year > 2009 & year < 2024) 
+
+US_mwh_vs_pet_p_withmpg <- left_join(US_mwh_vs_pet_p, epafueleff, by = c("product", "year" = "modelyear")) %>%
+  mutate(centspermile = ifelse(product %in% c("regular gasoline", "diesel"), value_usdpergal * (1/mileage) * 100,
+                               ifelse(product == "electricity", value_centperkWh * kWhpergge * (1/mileage), NA)),
+         centspergge = ifelse(product %in% c("regular gasoline", "diesel"), value_usdpergal * 100,
+                               ifelse(product == "electricity", value_centperkWh * kWhpergge, NA)),
+         usdperMJ = ifelse(product == "regular gasoline", value_usdpergal * (1/MJpergalgaso),
+                                ifelse(product == "diesel", value_usdpergal * (1/MJpergaldsl),
+                                       ifelse(product == "electricity", value_centperkWh * 0.01 * kWhperMJ, NA))),
+         vehfuel_label = ifelse(product %in% c("regular gasoline"), "gasoline LDV, \nregular gasoline",
+                                ifelse(product %in% c("diesel"), "HDV, ultra-low sulfur diesel",
+                                       ifelse(product %in% c("electricity"), "PEV, 100% at-home charging \nat U.S. average residential retail price", NA)))) %>%
+  left_join(CPI, by = c("year", "month")) %>%
+  filter(year < 2024 & year > 2010) %>%
+  mutate(centspermile_r = centspermile/cpi_adjfct,
+         centspergge_r = centspergge/cpi_adjfct,
+         usdperMJ_r = usdperMJ/cpi_adjfct,
+         centspermmbtu_r = value_mmbtu/cpi_adjfct)
+
+
+
+US_mwh_vs_pet_p_withmpg_summary <- US_mwh_vs_pet_p_withmpg %>%
+  group_by(product) %>%
+  summarise(centspermile = mean(centspermile),
+            centspermile_r = mean(centspermile_r),
+            centspergge_r = mean(centspergge_r),
+            usdperMJ_r = mean(usdperMJ_r),
+            centspermmbtu_r = mean(centspermmbtu_r))
+
+
+US_mwh_vs_pet_p_withmpg_w <- US_mwh_vs_pet_p_withmpg %>%
+  dplyr::select(year, month, product, centspermile_r) %>%
+  pivot_wider(id_cols = c(year, month), names_from = product, values_from = centspermile_r) %>%
+  mutate(savings = electricity - `regular gasoline`)
+  
+
+epafueleff_w <- epafueleff %>%
+  pivot_wider(id_cols = c(modelyear, mileage_unit), names_from = product, values_from = mileage)
+
+kable(epafueleff_w, caption = "On-road average fuel economies of new vehicles (by vehicle type and model year)")
+
+US_MWH_vs_pet_retail_ppermile_LDV_plot <- ggplot(subset(US_mwh_vs_pet_p_withmpg, product %in% c("regular gasoline", "electricity")), 
+                                                 aes(x = Date, y = centspermile_r, group = vehfuel_label, color = vehfuel_label)) +
+  geom_line(size = 1) +
+  scale_x_datetime(breaks = pretty_breaks(n = 12)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.2 * max(US_mwh_vs_pet_p_withmpg$centspermile_r)), breaks = pretty_breaks(n = 8)) +
+  scale_color_manual(values = EERE.palette.long[c(3,2)]) +
+  #labs(x = "", y = "cents per mile driven, 2022 dollars", color = "", title = "Fuel cost per mile by vehicle-fuel combination") +
+  labs(x = "", y = "cents per mile driven, 2023 dollars", color = "", title = "") +
+  myFGtheme +
+  #guides(color = guide_legend(nrow=2, byrow=TRUE, reverse = T)) +
+  theme(legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-4.75,-4.75,-4.75,-4.75),
+        panel.border = element_rect(color = "grey", fill = NA))
+US_MWH_vs_pet_retail_ppermile_LDV_plot
+
+ggsave("../Output/US_MWH_vs_pet_retail_ppermile_LDV_plot.png", US_MWH_vs_pet_retail_ppermile_LDV_plot, width = 6.5, height = 4, units = "in")
+
+```
+
+From 2011 to 2023, the U.S. average fuel cost per mile driven in a new gasoline-powered vehicle was `r round(mean(US_mwh_vs_pet_p_withmpg$centspermile_r[US_mwh_vs_pet_p_withmpg$product == "regular gasoline"]), 2)` and `r round(mean(US_mwh_vs_pet_p_withmpg$centspermile_r[US_mwh_vs_pet_p_withmpg$product == "electricity"]), 2)` for a new BEV (or for the electric share of a PHEV) recharging at home 100% of the time. 
+
+## PRICE STABILITY
+
+
+```{r stability, eval=T, echo=F, warning=F, message=F}
+
+US_mwh_vs_pet_p <- US_mwh_retail_price %>%
+  rename(value_centperkWh = price_centsperkWh, value_mmbtu = price_USDperMMBtu) %>%
+  mutate(value_usdpergal = NA) %>%
+  rbind(us_pet_p[,c("Date", "product", "type", "value_mmbtu", "value_usdpergal", "value_centperkWh")]) %>%
+  mutate(year = as.numeric(substr(as.character(Date), 1, 4)),
+         month = as.numeric(substr(as.character(Date), 6, 7))) %>%
+  filter(year > 2009 & year < 2024) 
+
+
+US_MWH_vs_pet_retail_p_plot <- ggplot(US_mwh_vs_pet_p, aes(x = Date, y = value_mmbtu, group = product, color = product)) +
+  geom_line(size = 1) +
+  scale_x_datetime(breaks = pretty_breaks(n = 12)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1.1 * max(US_mwh_vs_pet_p$value_mmbtu)), breaks = pretty_breaks(n = 8), sec.axis = sec_axis(trans = ~.*1, breaks = pretty_breaks(n = 8))) +
+  scale_color_manual(values = EERE.palette.long[c(2,3,5,6,7)]) +
+  labs(x = "", y = "USD per MMBtu", color = "", title = "U.S. average retail prices of gasoline and electricity \nadjusted by Btu content (2010-2023)") +
+  myFGtheme
+US_MWH_vs_pet_retail_p_plot
+
+ggsave("../Output/US_MWH_vs_pet_retail_p_plot.png", US_MWH_vs_pet_retail_p_plot, width = 7, height = 5.5, units = "in")
+
+
+US_mwh_vs_pet_p_summary <- US_mwh_vs_pet_p %>%
+  filter(year > 2010 & year < 2024) %>%
+  left_join(CPI, by = c("year", "month")) %>%
+  #filter(product != "ultra low sulfur diesel") %>%
+  group_by(product) %>%
+  mutate(log_return = log(value_mmbtu) - log(lag(value_mmbtu)),
+         value_mmbtu_r = value_mmbtu / cpi_adjfct,
+         log_return_r =log(value_mmbtu_r) - log(lag(value_mmbtu_r))) %>%
+  filter(!is.na(log_return)) %>%
+  summarise(nperiods = n(),
+            sd = sd(value_mmbtu),
+            mean = mean(value_mmbtu),
+            coeffvar = sd(value_mmbtu)/mean(value_mmbtu),
+            volatility = round(sd(log_return) * sqrt(nperiods),4),
+            volatility_r = round(sd(log_return_r) * sqrt(nperiods),4))
+
+#Note: I checked that volatility does not change regardless of the units I have for the prices (USDpergal, centperkWH, or USDpermmbtu)
+
+kable(US_mwh_vs_pet_p_summary[,c("product", "volatility_r")], caption = "Volatility in monthly U.S. average retail electricity and gasoline prices (2010-2023)")
+
+US_mwh_vs_pet_p_w <- US_mwh_vs_pet_p %>%
+  filter(year > 2009 & year < 2024) %>%
+  #filter(year > 2009 & year < 2020) %>%
+  dplyr::select(-Date) %>%
+  pivot_wider(id_cols = c(year, month), names_from = "product", values_from = "value_mmbtu")
+
+mwh_gaso_corr <- cor.test(US_mwh_vs_pet_p_w$electricity, US_mwh_vs_pet_p_w$`regular gasoline`, method = c("pearson"))
+
+#mwh_ulsd_corr <- cor.test(US_mwh_vs_pet_p_w$`electricity, residential sector`, US_mwh_vs_pet_p_w$`ultra low sulfur diesel`, method = c("pearson"))
+
+#gaso_ulsd_corr <- cor.test(US_mwh_vs_pet_p_w$`regular gasoline`, US_mwh_vs_pet_p_w$`ultra low sulfur diesel`, method = c("pearson"))
+
+#cor_pairs <- c("electricity-gasoline", "electricity-diesel", "gasoline-diesel")
+#Pearson_cor_coeffs <- c(mwh_gaso_corr$estimate, mwh_ulsd_corr$estimate, gaso_ulsd_corr$estimate)
+#Pearson_cor_pvals <- c(mwh_gaso_corr$p.value, mwh_ulsd_corr$p.value, gaso_ulsd_corr$p.value)
+
+cor_pairs <- c("electricity-gasoline")
+Pearson_cor_coeffs <- c(mwh_gaso_corr$estimate)
+Pearson_cor_pvals <- c(mwh_gaso_corr$p.value)
+
+cor_coefs_df <- data.frame(cor_pairs, Pearson_cor_coeffs, Pearson_cor_pvals) %>%
+  mutate(Pearson_cor_coeffs = round(Pearson_cor_coeffs, 4),
+         Pearson_cor_pvals = round(Pearson_cor_pvals, 4))
+
+kable(cor_coefs_df, caption = "Correlation between monthly U.S. average retail electricity and gasoline prices (2010-2023)")
+
+
+#Add series with first differences of prices
+
+#Note: The first price difference is difference for nominal and real dollar prices because each period is multiplied by a different factor.
+
+US_mwh_vs_pet_p_withmpg_changes <- US_mwh_vs_pet_p %>%
+  left_join(CPI, by = c("year", "month")) %>%
+  mutate(Date = as.Date(Date)) %>%
+  group_by(product) %>%
+  mutate(value_usdpergal_r = value_usdpergal/cpi_adjfct,
+         value_centperkWh_r = value_centperkWh/cpi_adjfct,
+         value_pctdelta = ifelse(!is.na(value_usdpergal), ((value_usdpergal) - lag(value_usdpergal))/ lag(value_usdpergal),
+                                 ifelse(!is.na(value_centperkWh), ((value_centperkWh) - lag(value_centperkWh))/lag(value_centperkWh), NA)),
+         value_pctdelta_r = ifelse(!is.na(value_usdpergal_r), ((value_usdpergal_r) - lag(value_usdpergal_r))/ lag(value_usdpergal_r),
+                                 ifelse(!is.na(value_centperkWh_r), ((value_centperkWh_r) - lag(value_centperkWh_r))/lag(value_centperkWh_r), NA))) %>%
+  mutate(index_val = ifelse(!is.na(value_usdpergal), 100*(value_usdpergal/value_usdpergal[Date == "2010-01-15"]),
+                            ifelse(!is.na(value_centperkWh), 100*(value_centperkWh/value_centperkWh[Date == "2010-01-15"]), NA)),
+         index_val_r = ifelse(!is.na(value_usdpergal_r), 100*(value_usdpergal_r/value_usdpergal_r[Date == "2010-01-15"]),
+                            ifelse(!is.na(value_centperkWh_r), 100*(value_centperkWh_r/value_centperkWh_r[Date == "2010-01-15"]), NA))) %>%
+  mutate(value_pctdelta_r = round(value_pctdelta_r, 4)) %>%
+  mutate(Date = as.POSIXct(Date))
+
+
+check_lrgdelta <- US_mwh_vs_pet_p_withmpg_changes %>%
+  filter(value_pctdelta_r <= -0.05 | value_pctdelta_r >= 0.05)
+
+mwh_gaso_pctchange_corr <- cor.test(US_mwh_vs_pet_p_withmpg_changes$value_pctdelta[US_mwh_vs_pet_p_withmpg_changes$product == "electricity"], US_mwh_vs_pet_p_withmpg_changes$value_pctdelta[US_mwh_vs_pet_p_withmpg_changes$product == "regular gasoline"], method = c("pearson"))
+
+
+
+#Price changes
+
+US_mwh_vs_pet_p_withmpg_changes_dataplot <- subset(US_mwh_vs_pet_p_withmpg_changes, year > 2010 & US_mwh_vs_pet_p_withmpg_changes$product %in% c("regular gasoline", "electricity"))
+
+US_MWH_vs_pet_retail_pctdelta_plot <- ggplot(US_mwh_vs_pet_p_withmpg_changes_dataplot, aes(x = Date, y = value_pctdelta_r, group = product, color = product)) +
+  geom_line(size = 1) +
+  scale_x_datetime(breaks = pretty_breaks(n = 12)) +
+  scale_y_continuous(expand = c(0,0), limits = c(1.1 * min(US_mwh_vs_pet_p_withmpg_changes_dataplot$value_pctdelta_r, na.rm = T), 1.1 * max(US_mwh_vs_pet_p_withmpg_changes_dataplot$value_pctdelta_r, na.rm = T)), breaks = pretty_breaks(n = 8), labels = scales::percent) +
+  scale_color_manual(values = EERE.palette.long[c(2,3,5,6,7)]) +
+  labs(x = "", y = "", color = "", title = "") +
+  myFGtheme +
+  guides(color = guide_legend(nrow=1, byrow=TRUE, reverse = F)) +
+  theme(legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-7.5,-7.5,-7.5,-7.5),
+        panel.border = element_rect(color = "grey", fill = NA))
+US_MWH_vs_pet_retail_pctdelta_plot
+
+ggsave("../Output/US_MWH_vs_pet_retail_pctdelta_plot.png", US_MWH_vs_pet_retail_pctdelta_plot, width = 6.5, height = 4.5, units = "in")
+ggsave("../Output/US_MWH_vs_pet_retail_pctdelta_plot_small.png", US_MWH_vs_pet_retail_pctdelta_plot, width = 6.5, height = 2.5, units = "in")
+
+US_MWH_vs_pet_retail_pctdelta_fct_plot <- ggplot(US_mwh_vs_pet_p_withmpg_changes, aes(x = Date, y = value_pctdelta_r, group = product, color = product)) +
+  geom_line(size = 0.65) +
+  facet_wrap(~product) +
+  scale_x_datetime(breaks = pretty_breaks(n = 12)) +
+  scale_y_continuous(expand = c(0,0), limits = c(1.1 * min(US_mwh_vs_pet_p_withmpg_changes$value_pctdelta_r, na.rm = T), 1.3 * max(US_mwh_vs_pet_p_withmpg_changes$value_pctdelta_r, na.rm = T)), breaks = pretty_breaks(n = 8), labels = scales::percent) +
+  scale_color_manual(values = EERE.palette.long[c(2,3,5,6,7)]) +
+  labs(x = "", y = "monthly percentage change in $2021 prices", color = "", title = "") +
+  myFGtheme +
+  theme(axis.text.x = element_text(angle = 65, vjust = .95,hjust=.95))+
+  theme(legend.position = "none") +
+  guides(color = guide_legend(nrow=1, byrow=TRUE, reverse = F)) 
+US_MWH_vs_pet_retail_pctdelta_fct_plot
+
+ggsave("../Output/US_MWH_vs_pet_retail_pctdelta_fct_plot.png", US_MWH_vs_pet_retail_pctdelta_fct_plot, width = 6.5, height = 4.5, units = "in")
+
+US_MWH_vs_pet_retail_indexval_plot <- ggplot(US_mwh_vs_pet_p_withmpg_changes, aes(x = Date, y = index_val_r, group = product, color = product)) +
+  geom_line(size = 1) +
+  scale_x_datetime(breaks = pretty_breaks(n = 12)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0.9 * min(US_mwh_vs_pet_p_withmpg_changes$index_val_r, na.rm = T), 1.1 * max(US_mwh_vs_pet_p_withmpg_changes$index_val_r, na.rm = T)), breaks = pretty_breaks(n = 8)) +
+  scale_color_manual(values = EERE.palette.long[c(2,3,5,6,7)]) +
+  labs(x = "", y = "Price Index (January 2010 = 100)", color = "", title = "") +
+  myFGtheme +
+  guides(color = guide_legend(nrow=1, byrow=TRUE, reverse = F)) +
+  theme(legend.margin=margin(0,0,0,0),
+        legend.box.margin=margin(-7.5,-7.5,-7.5,-7.5))
+US_MWH_vs_pet_retail_indexval_plot
+
+ggsave("../Output/US_MWH_vs_pet_retail_indexval_plot.png", US_MWH_vs_pet_retail_indexval_plot, width = 6.5, height = 4.5, units = "in")
+
+```
+
+## FUTURE AFFORDABILITY
+Explore AEO 2023 projections of:
+- motor gasoline prices
+- residential electricity prices  
+- transportation electricity prices  
+It would be interesting to know the difference between residential and transportation electricity price series
+
+
+```{r readAPI_AEO2023_gaso_MWH_p, eval=F}
+AEO2023_resid_mwh_p_url <- paste0("https://api.eia.gov/v2/aeo/2023/data/?frequency=annual&data[0]=value&facets[seriesId][]=prce_real_resd_NA_elc_NA_NA_y13dlrpmmbtu&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=", my_eia_API_key)
+
+AEO2023_trnsp_mwh_p_url <- paste0("https://api.eia.gov/v2/aeo/2023/data/?frequency=annual&data[0]=value&facets[seriesId][]=prce_real_trn_NA_elc_NA_NA_y13dlrpmmbtu&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=", my_eia_API_key)
+
+AEO2023_trnsp_gaso_p_url <- paste0("https://api.eia.gov/v2/aeo/2023/data/?frequency=annual&data[0]=value&facets[seriesId][]=prce_real_trn_NA_mgs_NA_NA_y13dlrpmmbtu&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=5000&api_key=", my_eia_API_key)
+
+
+aeo2023_resid_mwh_p_df <- eia_api_v2_read(AEO2023_resid_mwh_p_url)
+
+aeo2023_trnsp_mwh_p_df <- eia_api_v2_read(AEO2023_trnsp_mwh_p_url)
+
+aeo2023_trnsp_gaso_p_df <- eia_api_v2_read(AEO2023_trnsp_gaso_p_url)
+
+save(aeo2023_resid_mwh_p_df, file = "../Data/aeo2023_resid_mwh_p_df")
+
+save(aeo2023_trnsp_mwh_p_df, file = "../Data/aeo2023_trnsp_mwh_p_df")
+
+save(aeo2023_trnsp_gaso_p_df, file = "../Data/aeo2023_trnsp_gaso_p_df")
+```
+
+
+```{r AEO2023_gaso_MWH_p, eval=T, echo=F, warning=F, message=F}
+
+load("../Data/aeo2023_resid_mwh_p_df")
+
+load("../Data/aeo2023_trnsp_mwh_p_df")
+
+load("../Data/aeo2023_trnsp_gaso_p_df")
+
+aeo2023_mwh_gaso_p_df <- rbind(aeo2023_resid_mwh_p_df, aeo2023_trnsp_mwh_p_df, aeo2023_trnsp_gaso_p_df) %>%
+  mutate(value = as.numeric(value),
+         period = as.numeric(period)) %>%
+  mutate(seriesName2 = gsub("Energy Prices", "", seriesName))
+
+aeo2023_mwh_gaso_p_w <- aeo2023_mwh_gaso_p_df %>%
+  select(period, seriesName, scenario, value) %>%
+  pivot_wider(id_cols = c(period, scenario), names_from = "seriesName", values_from = "value") %>%
+  filter(period == 2050) %>%
+  mutate(checkrel = `Energy Prices : Residential : Electricity`/`Energy Prices : Transportation : Motor Gasoline`)
+
+aeo2023_mwh_gaso_p_plot_byscenario <- ggplot(aeo2023_mwh_gaso_p_df, aes(x=period, y=value, group = seriesName2, color=seriesName2)) +
+  geom_line()+
+  facet_wrap(~scenario, ncol = 4) +
+  scale_x_continuous(breaks = pretty_breaks(n=6)) +
+  scale_y_continuous(expand=c(0,0), limits = c(15,1.1*max(aeo2023_mwh_gaso_p_df$value))) +
+  scale_color_manual(values = EERE.palette.long[c(2,3,5,6,7)]) +
+  labs(x = "", y = "2022$/MMBtu", color = "", title = "AEO 2023 projections of motor gasoline and electricity prices by scenario") +
+  myFGtheme +
+  guides(color = guide_legend(nrow = 1)) +
+  theme(axis.text.x = element_text(angle = 65, vjust = .95,hjust=.95))
+aeo2023_mwh_gaso_p_plot_byscenario
+
+ggsave("../Output/aeo2023_mwh_gaso_p_plot_byscenario.png", aeo2023_mwh_gaso_p_plot_byscenario, width = 9, height = 8, units = "in")
+
+
+aeo2023_mwh_gaso_p_plot_byseries <- ggplot(aeo2023_mwh_gaso_p_df, aes(x=period, y=value, group = scenario, color=scenario)) +
+  geom_line()+
+  facet_wrap(~seriesName2, ncol = 4) +
+  scale_x_continuous(breaks = pretty_breaks(n=6)) +
+  scale_y_continuous(expand=c(0,0), limits = c(15,1.1*max(aeo2023_mwh_gaso_p_df$value))) +
+  #scale_color_manual(values = EERE.palette.long[c(2,3,5,6,7)]) +
+  labs(x = "", y = "2022$/MMBtu", color = "", title = "AEO 2023 projections of motor gasoline and electricity prices by scenario") +
+  myFGtheme +
+  guides(color = guide_legend(nrow = 1)) +
+  theme(axis.text.x = element_text(angle = 65, vjust = .95,hjust=.95))
+aeo2023_mwh_gaso_p_plot_byseries
+
+ggsave("../Output/aeo2023_mwh_gaso_p_plot_byseries.png", aeo2023_mwh_gaso_p_plot_byseries, width = 9, height = 8, units = "in")
+```
+Following the methodology outlined in Faruqui et al. (2019) https://www.brattle.com/wp-content/uploads/2021/05/17904_a_survey_of_residential_time-of-use_tou_rates.pdf, download the most recent EIA Form 861 data to calculate the fraction of U.S. residential customers enrolled in dynamic pricing programs (mostly TOU programs). Using 2015 data, Faruqui et al. (2019) report that 14% of all US utilities offered a residential TOU rate and that where TOU is available, around 3% of customers are enrolled on average. There were 2.2 million residential customers enrolled in TOU rates in the U.S. which amounted to 1.7% of all residential customers, and 3.4% of those customers for which a TOU was available.
+
+EIA descriptions of the various dynamic pricing programs:
+
+SCHEDULE 6, PART C: DYNAMIC PRICING PROGRAMS
+*Dynamic pricing programs* (also known as time-based rate programs) are designed to modify patterns of electricity usage, including the timing and level of electricity demand. Report those customers that are enrolled in the program and are billed accordingly whether or not they are active participants. For each state, balancing authority, and customer sector, report the number of customers enrolled in dynamic pricing programs.
+*Time of Use Prices (TOU)* is a program in which customers pay different prices at different times of the day. On-peak prices are higher and off-peak prices are lower than a “standard” rate. Price schedule is fixed and predefined, based on season, day of week, and time of day.
+*Real Time Pricing (RTP)* is a program of rate and price structure in which the retail price for electricity typically fluctuates hourly or more often, to reflect changes in the wholesale price of electricity on either a day- ahead or hour-ahead basis.
+*Variable Peak Pricing (VPP)* is a program in which a form of TOU pricing allows customers to purchase their generation supply at prices set on a daily basis with varying on-peak and constant off-peak rates. Under the VPP program, the on-peak price for each weekday becomes available the previous day (typically late afternoon) and the customer is billed for actual consumption during the billing cycle at these prices.
+*Critical Peak Pricing (CPP)* is a program in which rate and/or price structure is designed to encourage reduced consumption during periods of high wholesale market prices or system contingencies, by imposing a pre-specified high rate or price for a limited number of days or hours. Very high “critical peak” prices are assessed for certain hours on event days (often limited to 10-15 per year). Prices can be 3-10 times as much during these few hours. Typically, CPP is combined with a TOU rate, but not always.
+*Critical Peak Rebate (CPR)* is a program in which rate and/or price structure is designed to encourage reduced consumption during periods of high wholesale market prices or system contingencies, by providing a rebate to the customer on a limited number of days and for a limited number of hours, at the request of the energy provider. Under this structure the energy provider can call event days (often limited to 10-15 per year) and provide a rebate typically several times the average price for certain hours in the day. The rebate is based on the actual customer usage compared to its baseline to determine the amount of the demand reduction each hour.
+```{r TOU_enrollment, eval=T}
+#Data on revenue, sales and customer counts by customer type
+#revenue variables are in thousand dollars, sales variables are in megawatthours, customer variables are counts
+#Transportation sector customers refers to railroads and railways
+sales_ult_cust_2022 <- read_excel("../Data/f8612022/Sales_Ult_Cust_2022.xlsx", sheet = "States", skip =1) %>%
+  slice(-1) %>%
+  rename(year = `...1`,
+         utility_id = `...2`,
+         utility_name = `...3`,
+         part = `...4`,
+         service_type = `...5`,
+         data_type = `...6`,
+         state = `...7`,
+         ownership = `...8`,
+         ba_code = `...9`,
+         revenue_residential = `Revenues...10`,
+         sales_residential = `Sales...11`,
+         customers_residential = `Customers...12`,
+         revenue_commercial = `Revenues...13`,
+         sales_commercial = `Sales...14`,
+         customers_commercial = `Customers...15`,
+         revenue_industrial = `Revenues...16`,
+         sales_industrial = `Sales...17`,
+         customers_industrial = `Customers...18`,
+         revenue_transportation = `Revenues...19`,
+         sales_transportation = `Sales...20`,
+         customers_transportation = `Customers...21`,
+         revenue_total = `Revenues...22`,
+         sales_total = `Sales...23`,
+         customers_total = `Customers...24`,
+         ) %>%
+  mutate_at(c(1, 2, 10:24), as.numeric) %>%
+  filter(utility_id != "88888") %>% #these are three utilities in TX with the same "undisclosed" ID which only have industrial customers and cause duplications when merging with the dynamic pricing spreadsheet
+  filter(utility_id != "99999") #these are adjustment values at the state level and do not correspond to a specific utility
+
+#Note: The vast majority of utilities have a single service type (bundled). For the ones with multiple service types, calculate the total number of customers. There should be a unique number of customers for each combination of utility_id and state.
+sales_ult_cust_2022_rev <- sales_ult_cust_2022 %>%
+  group_by(year, utility_id, utility_name, state, ba_code) %>%
+  summarise(revenue_residential = sum(revenue_residential, na.rm = T),
+            sales_residential = sum(sales_residential, na.rm = T),
+            customers_residential = sum(customers_residential, na.rm = T),
+            revenue_commercial = sum(revenue_commercial, na.rm = T),
+            sales_commercial = sum(sales_commercial, na.rm = T),
+            customers_commercial = sum(customers_commercial, na.rm = T),
+            revenue_industrial = sum(revenue_industrial, na.rm = T),
+            sales_industrial = sum(sales_industrial, na.rm = T),
+            customers_industrial = sum(customers_industrial, na.rm = T),
+            revenue_transportation = sum(revenue_transportation, na.rm = T),
+            sales_transportation = sum(sales_transportation, na.rm = T),
+            customers_transportation = sum(customers_transportation, na.rm = T),
+            revenue_total = sum(revenue_total, na.rm = T),
+            sales_total = sum(sales_total, na.rm = T),
+            customers_total = sum(customers_total, na.rm = T))
+
+
+sales_ult_cust_2022_check <- sales_ult_cust_2022_rev %>%
+  group_by(utility_id) %>%
+  summarise(count_1 = n())
+
+#Data on dynamic pricing programs
+dynamic_pricing_2022 <- read_excel("../Data/f8612022/Dynamic_Pricing_2022.xlsx", sheet = "Dynamic Pricing_States", skip =2) %>%
+  rename(year = `Data Year`,
+         utility_id = `Utility Number`,
+         utility_name = `Utility Name`,
+         short_form = `Short Form`,
+         state = State,
+         ba_code = `BA Code`,
+         enrollment_residential = `Residential...7`,
+         enrollment_commercial = `Commercial...8`,
+         enrollment_industrial = `Industrial...9`,
+         enrollment_transportation = `Transportation...10`,
+         enrollment_total = `Total`,
+         tou_residential = `Residential...12`,
+         tou_commercial = `Commercial...13`,
+         tou_industrial = `Industrial...14`,
+         tou_transportation = `Transportation...15`,
+         rtp_residential = `Residential...16`,
+         rtp_commercial = `Commercial...17`,
+         rtp_industrial = `Industrial...18`,
+         rtp_transportation = `Transportation...19`,
+         vpp_residential = `Residential...20`,
+         vpp_commercial = `Commercial...21`,
+         vpp_industrial = `Industrial...22`,
+         vpp_transportation = `Transportation...23`,
+         cpp_residential = `Residential...24`,
+         cpp_commercial = `Commercial...25`,
+         cpp_industrial = `Industrial...26`,
+         cpp_transportation = `Transportation...27`,
+         cpr_residential = `Residential...28`,
+         cpr_commercial = `Commercial...29`,
+         cpr_industrial = `Industrial...30`,
+         cpr_transportation = `Transportation...31`,
+         ) %>%
+  select(-short_form, -utility_name) %>%
+  filter(utility_id != "88888") #these are three utilities in TX with the same "undisclosed" ID which only have industrial customers and cause duplications when merging with the dynamic pricing spreadsheet
+
+#tou = time-of-use
+#rtp = real time pricing
+#vpp = variable peak pricing
+#cpp = critical peak pricing
+#cpr = critical peak rebate
+
+sales_and_programs <- sales_ult_cust_2022_rev %>%
+  left_join(dynamic_pricing_2022, by = c("year", "utility_id", "state", "ba_code"), all.x = T)
+
+sales_and_programs_check <- sales_and_programs %>%
+  group_by(utility_id) %>%
+  summarise(count_2 = n())
+
+check_compare <- sales_ult_cust_2022_check %>%
+  left_join(sales_and_programs_check, by = "utility_id") %>%
+  mutate(ratio = count_1/count_2)
+
+
+  
+#Aside: check how many utilities have both bundled and delivery (i.e., distribution-only) customers and whether enrollment numbers make sense for them 
+multiservice_utilities <- sales_and_programs %>%
+  filter(tou_residential == "Y"|rtp_residential == "Y"|vpp_residential == "Y"|cpp_residential == "Y"|cpr_residential == "Y") %>%
+  group_by(utility_id, utility_name, state) %>%
+  summarise(count = n()) %>%
+  filter(count == 2) %>%
+  pull(utility_id)
+
+
+residential_programs <- sales_and_programs %>%
+  filter(tou_residential == "Y"|rtp_residential == "Y"|vpp_residential == "Y"|cpp_residential == "Y"|cpr_residential == "Y") %>%
+  #filter(utility_id %in% multiservice_utilities) %>%
+  select(year, utility_id, utility_name, state, ba_code, customers_residential, tou_residential, rtp_residential, vpp_residential, cpp_residential, cpr_residential, enrollment_residential) %>%
+  mutate_at(c("enrollment_residential"), as.numeric) %>%
+  mutate(participation_residential = round(enrollment_residential/customers_residential,3))
+
+TOU_programs_only <- sales_and_programs %>%
+  filter(tou_residential == "Y" & is.na(rtp_residential) & is.na(vpp_residential) & is.na(cpp_residential) & is.na(cpr_residential)) %>%
+  select(year, utility_id, utility_name, state, ba_code, customers_residential, tou_residential, rtp_residential, vpp_residential, cpp_residential, cpr_residential, enrollment_residential) %>%
+  mutate_at(c("enrollment_residential"), as.numeric) %>%
+  mutate(participation_residential = round(enrollment_residential/customers_residential,3))
+
+enrollment_by_state <- sales_and_programs %>%
+  mutate_at(c("enrollment_residential"), as.numeric) %>%
+  group_by(state) %>%
+  summarise(enrollment = sum(enrollment_residential, na.rm = T),
+            totalcustomers = sum(customers_residential, na.rm = T),
+            enrolled_frac = enrollment/totalcustomers)
+
+```
+
+The total number of utilities reporting in EIA Form 861 in 2022 was `r length(unique(levels(as.factor(sales_ult_cust_2022$utility_name))))`. 
+The total number of residential customers served by those utilities in that year was `r sum(sales_and_programs$customers_residential, na.rm = T)/1000000` million.
+
+The total number of utilities reporting in EIA Form 861 in 2022 and offering at least one residential dynamic pricing program was `r length(unique(levels(as.factor(residential_programs$utility_name))))`.
+The total number of residential customers served by utilities offering at least one residential dynamic pricing program was `r sum(residential_programs$customers_residential, na.rm = T)/1000000` million.
+The total number of residential customers enrolled in a dynamic pricing program was `r sum(residential_programs$enrollment_residential, na.rm = T)/1000000` million.
+
+The total number of utilities reporting in EIA Form 861 in 2022 offering TOU as only residential dynamic pricing option `r length(unique(levels(as.factor(TOU_programs_only$utility_name))))`.
+
+Fraction of utility-state combinations with TOU pricing offered to residential customers in 2022: `r nrow(subset(sales_and_programs, tou_residential == "Y"))` (i.e., `r nrow(subset(sales_and_programs, tou_residential == "Y"))/nrow(sales_ult_cust_2022)`)  
+
+Fraction of utilities that offered TOU pricing to commercial customers in 2022: `r nrow(subset(sales_and_programs, tou_commercial == "Y"))` (i.e., `r nrow(subset(sales_and_programs, tou_commercial == "Y"))/nrow(sales_ult_cust_2022)`)  
+
+Fraction of utilities that offered TOU pricing to industrial customers in 2022: `r nrow(subset(sales_and_programs, tou_commercial == "Y"))` (i.e., `r nrow(subset(sales_and_programs, tou_commercial == "Y"))/nrow(sales_ult_cust_2022)`)  
+
+
+Fraction of utilities that offered any dynamic pricing program to residential customers in 2022: `r nrow(subset(sales_and_programs, tou_residential == "Y" | rtp_residential == "Y" | vpp_residential == "Y" | cpp_residential == "Y" | cpr_residential == "Y"))` (i.e., `r nrow(subset(sales_and_programs, tou_residential == "Y" | rtp_residential == "Y" | vpp_residential == "Y" | cpp_residential == "Y" | cpr_residential == "Y"))/nrow(sales_ult_cust_2022)`)  
+
+Fraction of utilities that offered any dynamic pricing program to commercial customers in 2022: `r nrow(subset(sales_and_programs, tou_commercial == "Y" | rtp_commercial == "Y" | vpp_commercial == "Y" | cpp_commercial == "Y" | cpr_commercial == "Y"))` (i.e., `r nrow(subset(sales_and_programs, tou_commercial == "Y" | rtp_commercial == "Y" | vpp_commercial == "Y" | cpp_commercial == "Y" | cpr_commercial == "Y"))/nrow(sales_ult_cust_2022)`)  
+
+Fraction of utilities that offered any dynamic pricing program to industrial customers in 2022: `r nrow(subset(sales_and_programs, tou_industrial == "Y" | rtp_industrial == "Y" | vpp_industrial == "Y" | cpp_industrial == "Y" | cpr_industrial == "Y"))` (i.e., `r nrow(subset(sales_and_programs, tou_industrial == "Y" | rtp_industrial == "Y" | vpp_industrial == "Y" | cpp_industrial == "Y" | cpr_industrial == "Y"))/nrow(sales_ult_cust_2022)`)
+
+Fraction of residential customers served by utilities that offer a residential dynamic pricing program: `r sum(sales_and_programs$customers_residential[sales_and_programs$tou_residential == "Y"|sales_and_programs$rtp_residential == "Y"|sales_and_programs$vpp_residential == "Y"|sales_and_programs$cpp_residential == "Y"|sales_and_programs$cpr_residential == "Y"], na.rm=T)/sum(sales_and_programs$customers_residential, na.rm = T)`
+
+Fraction of commercial customers served by utilities that offer a commercial dynamic pricing program: `r sum(sales_and_programs$customers_commercial[sales_and_programs$tou_commercial == "Y"|sales_and_programs$rtp_commercial == "Y"|sales_and_programs$vpp_commercial == "Y"|sales_and_programs$cpp_commercial == "Y"|sales_and_programs$cpr_commercial == "Y"], na.rm=T)/sum(sales_and_programs$customers_commercial, na.rm = T)`
+
+Fraction of industrial customers served by utilities that offer an industrial dynamic pricing program: `r sum(sales_and_programs$customers_industrial[sales_and_programs$tou_industrial == "Y"|sales_and_programs$rtp_industrial == "Y"|sales_and_programs$vpp_industrial == "Y"|sales_and_programs$cpp_industrial == "Y"|sales_and_programs$cpr_industrial == "Y"], na.rm=T)/sum(sales_and_programs$customers_industrial, na.rm = T)`
+
+Fraction of residential customers enrolled in dynamic pricing programs (including only customers in utilities that offer them): `r sum(residential_programs$enrollment_residential, na.rm = T)/sum(residential_programs$customers_residential, na.rm = T)`
+
+Fraction of residential customers enrolled in dynamic pricing programs (including customers of all utilities): `r sum(residential_programs$enrollment_residential, na.rm = T)/sum(sales_ult_cust_2022$customers_residential, na.rm = T)`
